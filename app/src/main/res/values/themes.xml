@@ -1,0 +1,3 @@
+<resources>
+    <style name="Theme.MrChess" parent="android:Theme.Material.NoActionBar" />
+</resources>
