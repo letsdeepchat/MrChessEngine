@@ -7,6 +7,10 @@ also does post-game review and can import a position from FEN, PGN, or a screens
 The app has **no INTERNET permission**. The engine, the neural networks, and the screenshot
 recogniser all run on the device.
 
+## Download
+
+**[⬇ MrChessTrainer.apk](https://github.com/letsdeepchat/MrChessEngine/releases/latest/download/MrChessTrainer.apk)** for 64-bit Android phones (Android 8+). Open it on your phone and allow installing from this source. Every push to `main` rebuilds it.
+
 ## Features
 
 | | |
