@@ -28,8 +28,7 @@ jobs:
       - name: Install NDK
         run: echo "y" | $ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager "ndk;27.2.12479018"
       - name: Build Stockfish for arm64
-        run: scripts/build_stockfish_android.sh
-        env: { ANDROID_NDK_HOME: "${{ env.ANDROID_HOME }}/ndk/27.2.12479018" }
+        run: ANDROID_NDK_HOME="$ANDROID_HOME/ndk/27.2.12479018" scripts/build_stockfish_android.sh
       - run: ./gradlew :app:assembleRelease
       - name: APK size
         run: ls -lh app/build/outputs/apk/release/
