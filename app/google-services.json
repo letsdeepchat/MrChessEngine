@@ -1,0 +1,39 @@
+{
+  "project_info": {
+    "project_number": "59301955711",
+    "project_id": "mrchessx",
+    "storage_bucket": "mrchessx.firebasestorage.app"
+  },
+  "client": [
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:59301955711:android:f44f31d9118245b277174a",
+        "android_client_info": {
+          "package_name": "com.mrchess.app"
+        }
+      },
+      "oauth_client": [
+        {
+          "client_id": "59301955711-ha2tmjrdj0795vfsjkb0qnnbf5kcd53p.apps.googleusercontent.com",
+          "client_type": 3
+        }
+      ],
+      "api_key": [
+        {
+          "current_key": "AIzaSyAyj6gjVMNFKD9aFn9cdZLWzwBSjnAfe2g"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": [
+            {
+              "client_id": "59301955711-ha2tmjrdj0795vfsjkb0qnnbf5kcd53p.apps.googleusercontent.com",
+              "client_type": 3
+            }
+          ]
+        }
+      }
+    }
+  ],
+  "configuration_version": "1"
+}

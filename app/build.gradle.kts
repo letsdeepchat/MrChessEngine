@@ -20,8 +20,8 @@ android {
         applicationId = "com.mrchess.app"
         minSdk = 26
         targetSdk = 35
-        versionCode = 3
-        versionName = "1.2.0"
+        versionCode = 4
+        versionName = "1.2.1"
         buildConfigField("boolean", "CLOUD_SYNC", cloudSyncEnabled.toString())
         // Stockfish is built for arm64 only (see scripts/build_stockfish_android.sh).
         ndk { abiFilters += "arm64-v8a" }
