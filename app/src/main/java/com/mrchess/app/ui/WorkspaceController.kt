@@ -3,7 +3,7 @@ package com.mrchess.app.ui
 import android.content.Context
 import com.mrchess.app.audio.BoardSoundManager
 import com.mrchess.app.data.EngineProvider
-import com.mrchess.app.data.GameStore
+import com.mrchess.app.data.ReviewRepository
 import com.mrchess.core.TimelineAnnotator
 import com.mrchess.core.engine.EngineStrength
 import com.mrchess.core.engine.SearchLimit
@@ -20,11 +20,11 @@ import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
-import java.io.File
 
 enum class SessionMode { PLAY_AI, TWO_PLAYER, IMPORT_ANALYSIS, POST_GAME_REVIEW }
 
@@ -34,7 +34,8 @@ data class WorkspaceState(
     val userSide: Side = Side.WHITE,
     val elo: Int = 1500,
     val flipped: Boolean = false,
-    val autoFlip: Boolean = false,
+    /** Two Player only: turn the board 180° after every move so the side to move is at the bottom. */
+    val autoFlip: Boolean = mode == SessionMode.TWO_PLAYER,
     /** Free moves for both sides without engine replies (always on for import/review). */
     val analysisMode: Boolean = mode == SessionMode.IMPORT_ANALYSIS || mode == SessionMode.POST_GAME_REVIEW,
     val liveCoach: Boolean = false,
@@ -76,7 +77,7 @@ class WorkspaceController(
     private val scope: CoroutineScope,
     mode: SessionMode,
     private val sounds: BoardSoundManager,
-    private val store: GameStore,
+    private val history: ReviewRepository,
     private val onSaved: () -> Unit = {},
 ) {
     private val _state = MutableStateFlow(WorkspaceState(mode, title = defaultTitle(mode, 1500)))
@@ -87,7 +88,8 @@ class WorkspaceController(
     private var active = false
     private var hintRequested = false
     private var summaryWhenDone = false
-    private var savedFile: File? = null
+    /** Room id of this game's history record, once it has been saved. */
+    private var recordId: String? = null
     private var annotator: TimelineAnnotator? = null
     private val annotationDepth = if (mode == SessionMode.POST_GAME_REVIEW) 14 else 12
 
@@ -98,7 +100,7 @@ class WorkspaceController(
         if (a) reschedule() else worker?.cancel()
     }
 
-    fun load(timeline: GameTimeline, title: String? = null) {
+    fun load(timeline: GameTimeline, title: String? = null, recordId: String? = null) {
         _state.update {
             it.copy(
                 timeline = timeline, selected = null, targets = emptySet(), hint = null, hintFen = null,
@@ -106,7 +108,7 @@ class WorkspaceController(
                 flipped = timeline.tags["Black"] == "You",
             )
         }
-        savedFile = null
+        this.recordId = recordId
         summaryWhenDone = s.mode == SessionMode.POST_GAME_REVIEW
         reschedule()
     }
@@ -118,7 +120,7 @@ class WorkspaceController(
             mode = s.mode, timeline = t, userSide = side, elo = elo, flipped = side == Side.BLACK,
             liveCoach = s.liveCoach, cardOpen = s.liveCoach, autoFlip = s.autoFlip, title = defaultTitle(s.mode, elo),
         )
-        savedFile = null
+        recordId = null
         summaryWhenDone = false
         scope.launch { runCatching { EngineProvider.engine(context).newGame() } }
         reschedule()
@@ -127,7 +129,7 @@ class WorkspaceController(
     fun newTwoPlayerGame() {
         val t = GameTimeline(tags = mapOf("White" to "Player 1", "Black" to "Player 2"))
         _state.value = WorkspaceState(s.mode, timeline = t, autoFlip = s.autoFlip, liveCoach = s.liveCoach, cardOpen = s.liveCoach, title = "Two Player")
-        savedFile = null
+        recordId = null
         reschedule()
     }
 
@@ -166,7 +168,13 @@ class WorkspaceController(
     private fun play(m: Move) {
         val t = s.timeline.play(m)
         applyTimeline(t, playSound = true)
-        if (s.mode == SessionMode.TWO_PLAYER && s.autoFlip) _state.update { it.copy(flipped = it.position.sideToMove == Side.BLACK) }
+        if (s.mode == SessionMode.TWO_PLAYER && s.autoFlip) {
+            // Let the move land visually, then turn the board to the player whose turn it is.
+            scope.launch {
+                delay(250)
+                _state.update { if (it.autoFlip) it.copy(flipped = it.position.sideToMove == Side.BLACK) else it }
+            }
+        }
         if (s.gameOver && s.timeline.atEnd) onGameOver()
         reschedule()
     }
@@ -189,6 +197,7 @@ class WorkspaceController(
     private fun navigate(t: GameTimeline, sound: Boolean = false) {
         if (t.currentPly == s.timeline.currentPly) return
         applyTimeline(t, playSound = sound)
+        if (s.mode == SessionMode.TWO_PLAYER && s.autoFlip) _state.update { it.copy(flipped = it.position.sideToMove == Side.BLACK) }
         reschedule()
     }
 
@@ -203,7 +212,17 @@ class WorkspaceController(
     // ------------------------------------------------------------------ toggles & actions
 
     fun flip() = _state.update { it.copy(flipped = !it.flipped) }
-    fun toggleAutoFlip() = _state.update { it.copy(autoFlip = !it.autoFlip) }
+    /**
+     * Top-bar rotate button. Two Player: toggles auto-flip (turning it on immediately faces the
+     * side to move; turning it off flips the board once). Other modes: flips the board.
+     */
+    fun rotateButton() = _state.update {
+        when {
+            it.mode != SessionMode.TWO_PLAYER -> it.copy(flipped = !it.flipped)
+            !it.autoFlip -> it.copy(autoFlip = true, flipped = it.position.sideToMove == Side.BLACK)
+            else -> it.copy(autoFlip = false, flipped = !it.flipped)
+        }
+    }
 
     fun toggleAnalysisMode() {
         if (s.mode != SessionMode.PLAY_AI) return
@@ -243,10 +262,15 @@ class WorkspaceController(
         val reason = st.timeline.toGame(st.timeline.currentPly).resultReason ?: st.timeline.tags["Termination"] ?: ""
         _state.update { it.copy(status = "Game over: ${st.result.pgn} $reason".trim()) }
         summaryWhenDone = true
-        if ((st.mode == SessionMode.PLAY_AI || st.mode == SessionMode.TWO_PLAYER) && st.timeline.nodes.size >= 2) {
-            scope.launch(Dispatchers.IO) {
-                runCatching { savedFile = store.save(st.timeline.toGame(), savedFile); onSaved() }
-            }
+        if ((st.mode == SessionMode.PLAY_AI || st.mode == SessionMode.TWO_PLAYER) && st.timeline.nodes.size >= 2) saveHistory()
+    }
+
+    /** Saves (or updates) this game in the Review history with whatever analysis is done so far. */
+    private fun saveHistory() {
+        val t = s.timeline
+        val mode = s.mode.name
+        scope.launch(Dispatchers.IO) {
+            runCatching { recordId = history.save(t, mode, recordId); onSaved() }
         }
     }
 
@@ -315,7 +339,10 @@ class WorkspaceController(
                 _state.update { it.copy(annotating = false) }
             }
         }
-        if (summaryWhenDone && s.timeline.nodes.isNotEmpty() && s.timeline.nodes.all { it.annotation != null }) {
+        val allDone = s.timeline.nodes.isNotEmpty() && s.timeline.nodes.all { it.annotation != null }
+        // Keep the history record's accuracy and badges up to date once analysis finishes.
+        if (allDone && order.isNotEmpty() && (recordId != null || s.mode == SessionMode.POST_GAME_REVIEW)) saveHistory()
+        if (summaryWhenDone && allDone) {
             summaryWhenDone = false
             _state.update { it.copy(showSummary = true) }
         }

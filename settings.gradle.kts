@@ -15,4 +15,8 @@ dependencyResolutionManagement {
 rootProject.name = "MrChessEngine"
 include(":chesscore")
 // The Android app needs the Android SDK. Set -PcoreOnly=true to build/test only the pure-Kotlin core.
-if (providers.gradleProperty("coreOnly").orNull != "true") include(":app")
+if (providers.gradleProperty("coreOnly").orNull != "true") {
+    include(":app")
+    // Optional Google Sign-In + Firestore backup; linked into the app only when app/google-services.json exists.
+    include(":cloudsync")
+}

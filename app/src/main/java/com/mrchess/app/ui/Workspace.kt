@@ -194,9 +194,19 @@ private fun Header(st: WorkspaceState, c: WorkspaceController, menu: List<Header
     Row(Modifier.fillMaxWidth().height(HeaderH).padding(start = 12.dp), verticalAlignment = Alignment.CenterVertically) {
         Text(st.title, style = MaterialTheme.typography.titleMedium, maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.weight(1f))
         if (st.mode == SessionMode.TWO_PLAYER) {
-            IconToggleButton(checked = st.autoFlip, onCheckedChange = { c.toggleAutoFlip() }) {
-                Icon(Icons.Filled.ScreenRotation, "Auto-flip board", tint = if (st.autoFlip) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant)
+            // Pill shows whether auto-flip is on; tapping toggles it.
+            Surface(
+                onClick = c::rotateButton, shape = RoundedCornerShape(50),
+                color = if (st.autoFlip) MaterialTheme.colorScheme.primaryContainer else MaterialTheme.colorScheme.surfaceVariant,
+                modifier = Modifier.padding(end = 6.dp).height(32.dp),
+            ) {
+                Row(Modifier.padding(horizontal = 10.dp), verticalAlignment = Alignment.CenterVertically) {
+                    Icon(Icons.Filled.ScreenRotation, null, Modifier.size(16.dp))
+                    Text(if (st.autoFlip) " Auto-flip on" else " Auto-flip off", style = MaterialTheme.typography.labelMedium)
+                }
             }
+        } else {
+            IconButton(onClick = c::rotateButton) { Icon(Icons.Filled.ScreenRotation, "Rotate board") }
         }
         val sum = st.summary
         FilledTonalButton(onClick = c::openSummary, contentPadding = PaddingValues(horizontal = 12.dp), modifier = Modifier.height(32.dp)) {

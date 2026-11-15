@@ -31,7 +31,13 @@ import androidx.compose.runtime.getValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import androidx.compose.material3.AlertDialog
+import androidx.compose.material3.TextButton
+import androidx.compose.runtime.CompositionLocalProvider
+import com.mrchess.app.ui.BoardThemeSheet
+import com.mrchess.app.ui.CloudUi
 import com.mrchess.app.ui.HeaderAction
+import com.mrchess.app.ui.LocalBoardTheme
 import com.mrchess.app.ui.ImportScreen
 import com.mrchess.app.ui.MainViewModel
 import com.mrchess.app.ui.ReviewList
@@ -48,13 +54,26 @@ class MainActivity : ComponentActivity() {
         if (savedInstanceState == null) handleIntent(intent)
         setContent {
             MaterialTheme(colorScheme = if (isSystemInDarkTheme()) darkColorScheme() else lightColorScheme()) {
+              val boardTheme by vm.boardTheme.collectAsStateWithLifecycle()
+              CompositionLocalProvider(LocalBoardTheme provides boardTheme) {
                 val screen by vm.screen.collectAsStateWithLifecycle()
                 val importWs by vm.importWorkspace.collectAsStateWithLifecycle()
                 val reviewWs by vm.reviewWorkspace.collectAsStateWithLifecycle()
                 val importState by vm.importState.collectAsStateWithLifecycle()
                 val saved by vm.saved.collectAsStateWithLifecycle()
                 val soundOn by vm.soundOn.collectAsStateWithLifecycle()
-                val soundAction = HeaderAction(if (soundOn) "Board sounds: on" else "Board sounds: off") { vm.toggleSound() }
+                val theme by vm.boardTheme.collectAsStateWithLifecycle()
+                val themeSheet by vm.showThemeSheet.collectAsStateWithLifecycle()
+                val naturalVoice by vm.narrator.hasNaturalVoice.collectAsStateWithLifecycle()
+                val account by vm.cloudAccount.collectAsStateWithLifecycle()
+                val message by vm.message.collectAsStateWithLifecycle()
+                // Shared ⋮ menu entries for every board.
+                val common = buildList {
+                    add(HeaderAction("Board theme…") { vm.openThemeSheet() })
+                    add(HeaderAction(if (soundOn) "Board sounds: on" else "Board sounds: off") { vm.toggleSound() })
+                    if (!naturalVoice) add(HeaderAction("Download natural voice") { vm.downloadNaturalVoice() })
+                }
+                val soundAction = common
                 Scaffold(
                     bottomBar = {
                         NavigationBar(Modifier.height(64.dp)) {
@@ -70,21 +89,28 @@ class MainActivity : ComponentActivity() {
                             Screen.PLAY -> Workspace(vm.play, listOf(
                                 HeaderAction("Resign") { vm.play.resign() },
                                 HeaderAction("Review this game") { vm.reviewFrom(vm.play) },
-                                soundAction,
-                            ))
+                            ) + soundAction)
                             Screen.TWO_PLAYER -> Workspace(vm.twoPlayer, listOf(
                                 HeaderAction("Review this game") { vm.reviewFrom(vm.twoPlayer) },
-                                soundAction,
-                            ))
+                            ) + soundAction)
                             Screen.IMPORT -> importWs?.let { c ->
-                                Workspace(c, listOf(HeaderAction("New import") { vm.closeImported() }, soundAction))
+                                Workspace(c, listOf(HeaderAction("New import") { vm.closeImported() }) + soundAction)
                             } ?: ImportScreen(vm, importState)
                             Screen.REVIEW -> reviewWs?.let { c ->
-                                Workspace(c, listOf(HeaderAction("Back to games") { vm.closeReview() }, soundAction))
-                            } ?: ReviewList(saved, vm::reviewSaved, vm::deleteSaved)
+                                Workspace(c, listOf(HeaderAction("Back to games") { vm.closeReview() }) + soundAction)
+                            } ?: ReviewList(
+                                saved,
+                                CloudUi(vm.cloudAvailable, account, { vm.signIn(this@MainActivity) }, vm::signOut, vm::syncNow),
+                                vm::reviewSaved, vm::deleteSaved, vm::clearHistory,
+                            )
                         }
                     }
                 }
+                if (themeSheet) BoardThemeSheet(theme, vm::setBoardTheme, vm::closeThemeSheet)
+                message?.let { m ->
+                    AlertDialog(onDismissRequest = vm::clearMessage, confirmButton = { TextButton(onClick = vm::clearMessage) { Text("OK") } }, text = { Text(m) })
+                }
+              }
             }
         }
     }

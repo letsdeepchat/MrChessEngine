@@ -4,7 +4,13 @@ plugins {
     alias(libs.plugins.android.application)
     alias(libs.plugins.kotlin.android)
     alias(libs.plugins.kotlin.compose)
+    alias(libs.plugins.ksp)
 }
+
+// Cloud backup is opt-in: drop a Firebase google-services.json into app/ to build it in.
+// Without it the APK has no INTERNET permission and no Firebase code at all.
+val cloudSyncEnabled = file("google-services.json").exists()
+if (cloudSyncEnabled) apply(plugin = "com.google.gms.google-services")
 
 android {
     namespace = "com.mrchess.app"
@@ -14,19 +20,31 @@ android {
         applicationId = "com.mrchess.app"
         minSdk = 26
         targetSdk = 35
-        versionCode = 2
-        versionName = "1.1.0"
+        versionCode = 3
+        versionName = "1.2.0"
+        buildConfigField("boolean", "CLOUD_SYNC", cloudSyncEnabled.toString())
         // Stockfish is built for arm64 only (see scripts/build_stockfish_android.sh).
         ndk { abiFilters += "arm64-v8a" }
     }
 
+    signingConfigs {
+        // Fixed key so every CI build installs as an update over the previous one.
+        // It is committed for easy sideloading; set MRCHESS_KEYSTORE* env vars to use a private key.
+        create("sideload") {
+            storeFile = file(System.getenv("MRCHESS_KEYSTORE") ?: "mrchess-sideload.keystore")
+            storePassword = System.getenv("MRCHESS_KEYSTORE_PASSWORD") ?: "mrchess-sideload"
+            keyAlias = System.getenv("MRCHESS_KEY_ALIAS") ?: "mrchess"
+            keyPassword = System.getenv("MRCHESS_KEY_PASSWORD") ?: "mrchess-sideload"
+        }
+    }
+
     buildTypes {
+        debug { signingConfig = signingConfigs.getByName("sideload") }
         release {
             isMinifyEnabled = true
             isShrinkResources = true
             proguardFiles(getDefaultProguardFile("proguard-android-optimize.txt"), "proguard-rules.pro")
-            // Signed with the debug key so the CI artifact installs directly; replace for Play Store.
-            signingConfig = signingConfigs.getByName("debug")
+            signingConfig = signingConfigs.getByName("sideload")
         }
     }
 
@@ -35,7 +53,7 @@ android {
         targetCompatibility = JavaVersion.VERSION_17
     }
 
-    buildFeatures { compose = true }
+    buildFeatures { compose = true; buildConfig = true }
 
     packaging {
         // The engine runs as a separate process, so its "lib" must be extracted to nativeLibraryDir.
@@ -62,6 +80,11 @@ dependencies {
     debugImplementation(libs.compose.ui.tooling)
     implementation(libs.tensorflow.lite)
     implementation(libs.opencv)
+    implementation(libs.room.runtime)
+    implementation(libs.room.ktx)
+    ksp(libs.room.compiler)
+    implementation(libs.datastore.preferences)
+    if (cloudSyncEnabled) implementation(project(":cloudsync"))
 }
 
 // Fail early with a helpful message if the engine binary has not been built yet.

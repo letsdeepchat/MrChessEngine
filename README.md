@@ -23,6 +23,9 @@ recogniser all run on the device.
 | **Board sounds** | Move, capture, castle, check and game-end sounds play through one `SoundPool` that never takes audio focus, so music and speech are not interrupted on every move. |
 | **Move quality** | Each move gets a badge: Brilliant `!!`, Great `!`, Best `★`, Good, Inaccuracy `?!`, Mistake `?` or Blunder `??`. It is based on Stockfish MultiPV-2 centipawn differences and shown on the board and in the move strip. |
 | **Summary pop-up** | Accuracy for each side and a count of each move quality. Tap a count to jump to that move, with the move you played and the best move both drawn as arrows. |
+| **Board themes** | Classic Green, Tournament Blue, Walnut Wood, Midnight Slate and Royal Violet. Pick one from ⋮ → Board theme. The choice applies to every tab and is saved with DataStore. |
+| **Review history** | Finished and reviewed games are stored in a local Room database with accuracy and badges, and stay until you delete them or clear the app's storage. |
+| **Optional cloud backup** | Google Sign-In with Firebase (free Spark tier). This is **off unless you add `app/google-services.json`**. Without that file the APK has no INTERNET permission. See *Cloud backup setup* below. |
 | **Elo 800 to 3200** | Stockfish `UCI_Elo` covers 1320–3190, `Skill Level` is used below that, and the far right of the slider plays at full strength. |
 
 ### How explanations work (`chesscore/.../explain/MoveExplainer.kt`)
@@ -74,8 +77,7 @@ scripts/build_stockfish_android.sh            # SF_ARCH=armv8-dotprod for ~15% m
 
 The GitHub Actions workflow (`.github/workflows/android.yml`) runs the same steps and uploads the
 APK as an artifact. Push the repo and you get an installable APK without a local Android setup.
-The release build is signed with the debug key so you can sideload it directly. Swap in your own
-key before publishing.
+The release build is signed with the committed sideload key (see *Signing*).
 
 **APK size.** The budget is under 100 MB. The Stockfish 17.1 binary with both embedded nets is
 the bulk of it, OpenCV adds about 20 MB for arm64 and TFLite about 3 MB. If you need it smaller,
@@ -90,6 +92,31 @@ There are 20 tests. They cover perft on 5 reference positions, FEN/SAN/PGN round
 mate/fork/pin/skewer/free-capture/saving-a-piece explanations against real Stockfish,
 limited-strength play, search cancellation safety, and a review that flags the scholar's-mate
 blunder with its refutation.
+
+## Cloud backup setup (optional)
+
+1. In the [Firebase console](https://console.firebase.google.com), create a project and stay on the free Spark plan.
+2. Add an Android app with package `com.mrchess.app` and the SHA-1 of the signing key:
+   `D4:36:F4:E5:35:57:2E:7C:80:B3:D3:02:3A:32:A1:CD:55:A6:82:0D`
+3. Under **Authentication → Sign-in method**, enable **Google**.
+4. Create a **Firestore** database with these rules:
+   ```
+   rules_version = '2';
+   service cloud.firestore { match /databases/{db}/documents {
+     match /users/{uid}/games/{id} { allow read, write: if request.auth != null && request.auth.uid == uid; }
+   } }
+   ```
+5. Download `google-services.json` again (after enabling Google sign-in) and commit it as `app/google-services.json`.
+   The next build includes the `:cloudsync` module and the INTERNET permission, and the Review tab
+   shows "Sign in with Google to sync history".
+
+## Signing
+
+`app/mrchess-sideload.keystore` is committed so every CI build is signed with the same key and
+installs as an update over the previous one. Because the repo is public, anyone could sign an APK
+with this key. That is fine for personal sideloading. For a Play Store release, set
+`MRCHESS_KEYSTORE`, `MRCHESS_KEYSTORE_PASSWORD`, `MRCHESS_KEY_ALIAS` and `MRCHESS_KEY_PASSWORD` to
+your own private key.
 
 ## Screenshot recognition model
 

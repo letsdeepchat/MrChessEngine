@@ -37,10 +37,6 @@ import kotlin.math.atan2
 import kotlin.math.cos
 import kotlin.math.sin
 
-private val Light = Color(0xFFEEEED2)
-private val Dark = Color(0xFF769656)
-private val LastMoveTint = Color(0x88F6F669)
-private val SelectedTint = Color(0x99BACA44)
 private val CheckTint = Color(0xAAE04040)
 private val ArrowColor = Color(0xCC1E88E5)
 private val AltArrowColor = Color(0x99FB8C00)
@@ -61,7 +57,12 @@ fun ChessBoard(
     /** Move-quality badge drawn at the top-right corner of a square (usually the last move's destination). */
     badge: Pair<Int, MoveQuality>? = null,
     onTap: ((Int) -> Unit)? = null,
+    theme: BoardTheme = LocalBoardTheme.current,
 ) {
+    val Light = theme.light
+    val Dark = theme.dark
+    val LastMoveTint = theme.lastMove
+    val SelectedTint = theme.selected
     BoxWithConstraints(modifier.fillMaxWidth().aspectRatio(1f)) {
         val cell = maxWidth / 8
         val glyphSize = with(LocalDensity.current) { (cell * 0.82f).toSp() }

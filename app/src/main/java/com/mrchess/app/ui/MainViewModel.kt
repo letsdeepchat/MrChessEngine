@@ -5,8 +5,8 @@ import android.net.Uri
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import com.mrchess.app.MrChessApp
-import com.mrchess.app.data.GameStore
-import com.mrchess.app.data.SavedGame
+import android.app.Activity
+import com.mrchess.app.data.GameRecordEntity
 import com.mrchess.app.vision.ImageToFen
 import com.mrchess.app.vision.Recognition
 import com.mrchess.core.rules.GameTimeline
@@ -15,7 +15,9 @@ import com.mrchess.core.rules.Position
 import com.mrchess.core.rules.Side
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
@@ -34,7 +36,7 @@ data class ImportState(
 class MainViewModel(app: Application) : AndroidViewModel(app) {
     private val ctx get() = getApplication<Application>()
     private val mrApp get() = getApplication<MrChessApp>()
-    private val store = GameStore(app)
+    private val history get() = mrApp.history
     private var visionInstance: ImageToFen? = null
     private val vision: ImageToFen get() = visionInstance ?: ImageToFen(ctx).also { visionInstance = it }
 
@@ -45,13 +47,19 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
     val screen: StateFlow<Screen> = _screen
     private val _import = MutableStateFlow(ImportState())
     val importState: StateFlow<ImportState> = _import
-    private val _saved = MutableStateFlow<List<SavedGame>>(emptyList())
-    val saved: StateFlow<List<SavedGame>> = _saved
-    private val _soundOn = MutableStateFlow(true)
-    val soundOn: StateFlow<Boolean> = _soundOn
+    val saved: StateFlow<List<GameRecordEntity>> =
+        mrApp.history.games.stateIn(viewModelScope, SharingStarted.Eagerly, emptyList())
+    val soundOn: StateFlow<Boolean> = mrApp.settings.soundOn.stateIn(viewModelScope, SharingStarted.Eagerly, true)
+    val boardTheme: StateFlow<BoardTheme> = mrApp.settings.boardTheme.stateIn(viewModelScope, SharingStarted.Eagerly, BoardTheme.DEFAULT)
+    val cloudAvailable: Boolean get() = history.cloud.available
+    val cloudAccount: StateFlow<String?> get() = history.cloud.account
+    private val _showThemeSheet = MutableStateFlow(false)
+    val showThemeSheet: StateFlow<Boolean> = _showThemeSheet
+    private val _message = MutableStateFlow<String?>(null)
+    val message: StateFlow<String?> = _message
 
     private fun controller(mode: SessionMode) =
-        WorkspaceController(ctx, viewModelScope, mode, sounds, store, onSaved = ::refreshSaved)
+        WorkspaceController(ctx, viewModelScope, mode, sounds, history)
 
     val play = controller(SessionMode.PLAY_AI)
     val twoPlayer = controller(SessionMode.TWO_PLAYER).also { it.newTwoPlayerGame() }
@@ -63,14 +71,17 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
     init {
         play.newGame(Side.WHITE, 1500)
         activate()
-        refreshSaved()
+        viewModelScope.launch {
+            history.migrateLegacyPgnFiles()
+            history.sync()
+        }
+        viewModelScope.launch { soundOn.collect { sounds.enabled = it } }
     }
 
     fun go(s: Screen) {
         _screen.value = s
         narrator.stop()
         activate()
-        if (s == Screen.REVIEW) refreshSaved()
     }
 
     /** Only the visible session may use the engine. */
@@ -83,8 +94,40 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
     }
 
     fun toggleSound() {
-        _soundOn.update { !it }
-        sounds.enabled = _soundOn.value
+        viewModelScope.launch { mrApp.settings.setSoundOn(!soundOn.value) }
+    }
+
+    fun openThemeSheet() { _showThemeSheet.value = true }
+    fun closeThemeSheet() { _showThemeSheet.value = false }
+    fun setBoardTheme(t: BoardTheme) {
+        viewModelScope.launch { mrApp.settings.setBoardTheme(t) }
+        _showThemeSheet.value = false
+    }
+
+    fun downloadNaturalVoice() = narrator.installVoiceData(ctx)
+
+    fun clearMessage() { _message.value = null }
+
+    // ------------------------------------------------------------------ cloud backup
+
+    fun signIn(activity: Activity) {
+        viewModelScope.launch {
+            history.cloud.signIn(activity)
+                .onSuccess { email -> _message.value = "Signed in as $email. Syncing your games…"; history.sync() }
+                .onFailure { e -> _message.value = "Sign-in failed: ${e.message}" }
+        }
+    }
+
+    fun signOut() { viewModelScope.launch { history.cloud.signOut() } }
+
+    fun syncNow() {
+        viewModelScope.launch {
+            history.sync().onFailure { e -> _message.value = "Sync failed (offline?): ${e.message}" }
+        }
+    }
+
+    fun clearHistory(alsoCloud: Boolean) {
+        viewModelScope.launch { history.clear(alsoCloud) }
     }
 
     // ------------------------------------------------------------------ import
@@ -178,25 +221,21 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
 
     // ------------------------------------------------------------------ review
 
-    fun refreshSaved() {
-        viewModelScope.launch(Dispatchers.IO) { _saved.value = store.list() }
+    fun deleteSaved(g: GameRecordEntity) {
+        viewModelScope.launch { history.delete(g.id) }
     }
 
-    fun deleteSaved(g: SavedGame) {
-        viewModelScope.launch(Dispatchers.IO) { store.delete(g.file); _saved.value = store.list() }
-    }
-
-    fun reviewSaved(g: SavedGame) {
+    fun reviewSaved(g: GameRecordEntity) {
         viewModelScope.launch {
-            val game = withContext(Dispatchers.IO) { runCatching { store.load(g.file) }.getOrNull() } ?: return@launch
-            openReview(GameTimeline.fromGame(game, atEnd = false), g.title)
+            val t = history.load(g.id) ?: run { _message.value = "Could not open that game"; return@launch }
+            openReview(t, g.title, g.id)
         }
     }
 
-    private fun openReview(t: GameTimeline, title: String) {
+    private fun openReview(t: GameTimeline, title: String, recordId: String? = null) {
         _reviewWs.value?.setActive(false)
         val c = controller(SessionMode.POST_GAME_REVIEW)
-        c.load(t, title)
+        c.load(t, title, recordId)
         _reviewWs.value = c
         _screen.value = Screen.REVIEW
         activate()
@@ -206,7 +245,6 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         _reviewWs.value?.setActive(false)
         _reviewWs.value = null
         narrator.stop()
-        refreshSaved()
     }
 
     /** Opens the current Play / Two Player game in Review. */

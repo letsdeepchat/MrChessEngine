@@ -33,6 +33,8 @@ jobs:
       - name: Build Stockfish for arm64
         run: ANDROID_NDK_HOME="$ANDROID_HOME/ndk/27.2.12479018" scripts/build_stockfish_android.sh
       - run: ./gradlew :app:assembleRelease
+      # The optional cloud-backup module is not linked into the default APK; make sure it still compiles.
+      - run: ./gradlew :cloudsync:compileReleaseKotlin
       - name: APK size
         run: ls -lh app/build/outputs/apk/release/
       - uses: actions/upload-artifact@v4
