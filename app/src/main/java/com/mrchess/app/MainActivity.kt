@@ -66,6 +66,7 @@ class MainActivity : ComponentActivity() {
                 val themeSheet by vm.showThemeSheet.collectAsStateWithLifecycle()
                 val naturalVoice by vm.narrator.hasNaturalVoice.collectAsStateWithLifecycle()
                 val account by vm.cloudAccount.collectAsStateWithLifecycle()
+                val accountName by vm.cloudName.collectAsStateWithLifecycle()
                 val message by vm.message.collectAsStateWithLifecycle()
                 // Shared ⋮ menu entries for every board.
                 val common = buildList {
@@ -100,7 +101,7 @@ class MainActivity : ComponentActivity() {
                                 Workspace(c, listOf(HeaderAction("Back to games") { vm.closeReview() }) + soundAction)
                             } ?: ReviewList(
                                 saved,
-                                CloudUi(vm.cloudAvailable, account, { vm.signIn(this@MainActivity) }, vm::signOut, vm::syncNow),
+                                CloudUi(vm.cloudAvailable, account, { vm.signIn(this@MainActivity) }, vm::signOut, vm::syncNow, accountName),
                                 vm::reviewSaved, vm::deleteSaved, vm::clearHistory,
                             )
                         }

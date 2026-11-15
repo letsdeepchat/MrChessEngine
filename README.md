@@ -15,7 +15,7 @@ recogniser all run on the device.
 
 | | |
 |---|---|
-| **Four tabs** | **Play** (you vs Stockfish), **Two Player** (pass-and-play on one phone, optional auto-flip), **Import** (FEN / PGN / screenshot), **Review** (your saved games). All four use the same board workspace. |
+| **Four tabs** | **Play** (you vs Stockfish), **Two Player** (Tabletop: phone flat between two players with Black's pieces drawn upside down for the opposite player; Pass & Play: the board turns each move; Fixed: White at the bottom), **Import** (FEN / PGN / screenshot), **Review** (your saved games). All four use the same board workspace. |
 | **Thumb-zone layout** | Fixed layout from top to bottom: header (48dp), move strip (40dp), free space, full-width board, action bar (48dp), mode bar (44dp), tabs. The board sits low enough to reach with one thumb, and pop-ups float over the free space, so the board never moves. |
 | **Move navigation** | `|<` `<` `>` `>|` plus a move strip you can tap to jump to any move. If you go back and play a different move, the later moves are dropped and the game continues from your new move (Stockfish replies in Play). |
 | **Best move + why / Live coach** | A floating card you can close with × or by swiping. It shows the best move as a blue arrow, the eval, tactic/position tags, 2–3 reasons, the expected continuation and the 2nd-best move. Live coach keeps analysing while the card is hidden, and the "Show coach" pill brings it back. |

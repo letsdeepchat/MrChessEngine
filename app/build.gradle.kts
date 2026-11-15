@@ -12,6 +12,16 @@ plugins {
 val cloudSyncEnabled = file("google-services.json").exists()
 if (cloudSyncEnabled) apply(plugin = "com.google.gms.google-services")
 
+// Web OAuth client (client_type 3) from google-services.json. Credential Manager needs this as the
+// server client ID; it is a fallback in case default_web_client_id is not generated.
+val webClientId: String = if (!cloudSyncEnabled) "" else runCatching {
+    @Suppress("UNCHECKED_CAST")
+    val json = groovy.json.JsonSlurper().parse(file("google-services.json")) as Map<String, Any?>
+    val clients = json["client"] as List<Map<String, Any?>>
+    clients.flatMap { (it["oauth_client"] as? List<Map<String, Any?>>).orEmpty() }
+        .firstOrNull { (it["client_type"] as? Number)?.toInt() == 3 }?.get("client_id") as? String
+}.getOrNull() ?: ""
+
 android {
     namespace = "com.mrchess.app"
     compileSdk = 35
@@ -20,9 +30,10 @@ android {
         applicationId = "com.mrchess.app"
         minSdk = 26
         targetSdk = 35
-        versionCode = 4
-        versionName = "1.2.1"
+        versionCode = 5
+        versionName = "1.3.0"
         buildConfigField("boolean", "CLOUD_SYNC", cloudSyncEnabled.toString())
+        buildConfigField("String", "WEB_CLIENT_ID", "\"$webClientId\"")
         // Stockfish is built for arm64 only (see scripts/build_stockfish_android.sh).
         ndk { abiFilters += "arm64-v8a" }
     }

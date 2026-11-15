@@ -53,6 +53,7 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
     val boardTheme: StateFlow<BoardTheme> = mrApp.settings.boardTheme.stateIn(viewModelScope, SharingStarted.Eagerly, BoardTheme.DEFAULT)
     val cloudAvailable: Boolean get() = history.cloud.available
     val cloudAccount: StateFlow<String?> get() = history.cloud.account
+    val cloudName: StateFlow<String?> get() = history.cloud.profileName
     private val _showThemeSheet = MutableStateFlow(false)
     val showThemeSheet: StateFlow<Boolean> = _showThemeSheet
     private val _message = MutableStateFlow<String?>(null)
@@ -113,8 +114,13 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
     fun signIn(activity: Activity) {
         viewModelScope.launch {
             history.cloud.signIn(activity)
-                .onSuccess { email -> _message.value = "Signed in as $email. Syncing your games…"; history.sync() }
-                .onFailure { e -> _message.value = "Sign-in failed: ${e.message}" }
+                .onSuccess { email ->
+                    _message.value = "Signed in as $email. Merging your games with the cloud…"
+                    history.sync()
+                        .onSuccess { _message.value = "Signed in as $email. Your history is synced." }
+                        .onFailure { e -> _message.value = "Signed in as $email, but sync failed: ${e.message}" }
+                }
+                .onFailure { e -> if (e !is kotlinx.coroutines.CancellationException) _message.value = e.message ?: "Sign-in failed" }
         }
     }
 

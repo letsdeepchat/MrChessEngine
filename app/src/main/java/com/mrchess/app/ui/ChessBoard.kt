@@ -23,6 +23,7 @@ import androidx.compose.ui.graphics.Path
 import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.ui.graphics.drawscope.DrawScope
 import androidx.compose.ui.graphics.drawscope.Stroke
+import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontWeight
@@ -57,6 +58,8 @@ fun ChessBoard(
     /** Move-quality badge drawn at the top-right corner of a square (usually the last move's destination). */
     badge: Pair<Int, MoveQuality>? = null,
     onTap: ((Int) -> Unit)? = null,
+    /** Tabletop two-player: draw Black's pieces rotated 180° so the opposite player sees them upright. */
+    rotateBlackPieces: Boolean = false,
     theme: BoardTheme = LocalBoardTheme.current,
 ) {
     val Light = theme.light
@@ -87,11 +90,12 @@ fun ChessBoard(
                             position[sq]?.let { p ->
                                 val fill = if (p.side == Side.WHITE) Color.White else Color(0xFF202020)
                                 val outline = if (p.side == Side.WHITE) Color(0xFF202020) else Color(0xFF9E9E9E)
+                                val turn = if (rotateBlackPieces && p.side == Side.BLACK) Modifier.graphicsLayer { rotationZ = 180f } else Modifier
                                 Text(
                                     p.glyph.toString() + "\uFE0E", // text (not emoji) presentation
-                                    style = TextStyle(fontSize = glyphSize, color = outline, drawStyle = Stroke(width = 4f)),
+                                    turn, style = TextStyle(fontSize = glyphSize, color = outline, drawStyle = Stroke(width = 4f)),
                                 )
-                                Text(p.glyph.toString() + "\uFE0E", style = TextStyle(fontSize = glyphSize, color = fill))
+                                Text(p.glyph.toString() + "\uFE0E", turn, style = TextStyle(fontSize = glyphSize, color = fill))
                             }
                             if (sq in targets) {
                                 val dot = if (position[sq] != null) cell * 0.9f else cell * 0.3f

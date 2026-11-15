@@ -27,6 +27,8 @@ interface CloudSync {
     val available: Boolean
     /** Signed-in account e-mail, or null. */
     val account: StateFlow<String?>
+    /** Signed-in Google profile name, or null. */
+    val profileName: StateFlow<String?>
 
     /** [activity] is an android.app.Activity (kept as Any so this interface stays platform-free). */
     suspend fun signIn(activity: Any): Result<String>
@@ -39,6 +41,7 @@ interface CloudSync {
     object Disabled : CloudSync {
         override val available = false
         override val account: StateFlow<String?> = MutableStateFlow(null)
+        override val profileName: StateFlow<String?> = MutableStateFlow(null)
         override suspend fun signIn(activity: Any) = Result.failure<String>(IllegalStateException("Cloud sync is not configured"))
         override suspend fun signOut() {}
         override suspend fun push(records: List<CloudGameRecord>) {}

@@ -109,11 +109,14 @@ class ReviewRepository(private val context: Context, val cloud: CloudSync) {
     companion object {
         /** Loads the Firebase implementation if this build includes it (see app/build.gradle.kts). */
         fun createCloudSync(context: Context): CloudSync = runCatching {
-            val clientIdRes = context.resources.getIdentifier("default_web_client_id", "string", context.packageName)
-            if (clientIdRes == 0) return CloudSync.Disabled
+            if (!com.mrchess.app.BuildConfig.CLOUD_SYNC) return CloudSync.Disabled
+            // Must be the *web* client (type 3), never the Android client (type 1).
+            val res = context.resources.getIdentifier("default_web_client_id", "string", context.packageName)
+            val webClientId = (if (res != 0) context.getString(res) else "").ifBlank { com.mrchess.app.BuildConfig.WEB_CLIENT_ID }
+            if (webClientId.isBlank()) return CloudSync.Disabled
             val cls = Class.forName("com.mrchess.cloudsync.FirebaseCloudSync")
             cls.getConstructor(Context::class.java, String::class.java)
-                .newInstance(context, context.getString(clientIdRes)) as CloudSync
+                .newInstance(context, webClientId) as CloudSync
         }.getOrDefault(CloudSync.Disabled)
     }
 }

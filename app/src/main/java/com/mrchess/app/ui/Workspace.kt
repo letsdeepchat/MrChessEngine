@@ -68,6 +68,7 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.input.pointer.pointerInput
@@ -138,9 +139,10 @@ fun UnifiedChessWorkspace(
                     when {
                         st.engineThinking -> { Spinner(); Text(" Engine thinking…", style = MaterialTheme.typography.labelMedium) }
                         st.hintLoading -> { Spinner(); Text(" Coach is analysing…", style = MaterialTheme.typography.labelMedium) }
-                        st.status != null -> Text(st.status, style = MaterialTheme.typography.labelLarge, fontWeight = FontWeight.Bold)
+                        st.status != null && !st.tabletop -> Text(st.status, style = MaterialTheme.typography.labelLarge, fontWeight = FontWeight.Bold)
                     }
                 }
+                if (st.tabletop) TabletopTurn(st, Modifier.align(Alignment.BottomCenter).padding(bottom = 10.dp))
                 val hasCard = hint != null || st.inspecting
                 if (!st.cardOpen && hasCard) {
                     Surface(
@@ -163,6 +165,7 @@ fun UnifiedChessWorkspace(
                 altArrow = inspectNode?.move,
                 badge = badgeNode?.let { n -> n.moveQualityBadge?.let { q -> n.move.to to q } },
                 onTap = c::onSquareTap,
+                rotateBlackPieces = st.tabletop,
             )
             ActionBar(st, c)
             ModeBar(st, c)
@@ -183,6 +186,26 @@ fun UnifiedChessWorkspace(
     st.error?.let { err -> AlertDialog(onDismissRequest = c::clearError, confirmButton = { TextButton(onClick = c::clearError) { Text("OK") } }, text = { Text(err) }) }
 }
 
+/** Turn label at the board's top edge; upside down on Black's turn so the opposite player can read it. */
+@Composable
+private fun TabletopTurn(st: WorkspaceState, modifier: Modifier) {
+    val black = st.position.sideToMove == Side.BLACK
+    val text = when {
+        st.gameOver -> st.status ?: "Game over"
+        black -> "Black to move"
+        else -> "White to move"
+    }
+    Surface(
+        shape = RoundedCornerShape(50),
+        color = if (black) Color(0xFF202020) else Color(0xFFF2F2F2),
+        border = BorderStroke(1.dp, Color(0xFF9E9E9E)),
+        modifier = modifier.graphicsLayer { rotationZ = if (black && !st.gameOver) 180f else 0f },
+    ) {
+        Text(text, color = if (black) Color.White else Color(0xFF202020), style = MaterialTheme.typography.labelLarge,
+            fontWeight = FontWeight.Bold, modifier = Modifier.padding(horizontal = 14.dp, vertical = 4.dp))
+    }
+}
+
 @Composable
 private fun Spinner() = CircularProgressIndicator(Modifier.size(14.dp), strokeWidth = 2.dp)
 
@@ -194,15 +217,15 @@ private fun Header(st: WorkspaceState, c: WorkspaceController, menu: List<Header
     Row(Modifier.fillMaxWidth().height(HeaderH).padding(start = 12.dp), verticalAlignment = Alignment.CenterVertically) {
         Text(st.title, style = MaterialTheme.typography.titleMedium, maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.weight(1f))
         if (st.mode == SessionMode.TWO_PLAYER) {
-            // Pill shows whether auto-flip is on; tapping toggles it.
+            // Pill shows the board orientation; tapping cycles Tabletop → Pass & Play → Fixed.
             Surface(
                 onClick = c::rotateButton, shape = RoundedCornerShape(50),
-                color = if (st.autoFlip) MaterialTheme.colorScheme.primaryContainer else MaterialTheme.colorScheme.surfaceVariant,
+                color = if (st.twoPlayerView != TwoPlayerView.FIXED) MaterialTheme.colorScheme.primaryContainer else MaterialTheme.colorScheme.surfaceVariant,
                 modifier = Modifier.padding(end = 6.dp).height(32.dp),
             ) {
                 Row(Modifier.padding(horizontal = 10.dp), verticalAlignment = Alignment.CenterVertically) {
                     Icon(Icons.Filled.ScreenRotation, null, Modifier.size(16.dp))
-                    Text(if (st.autoFlip) " Auto-flip on" else " Auto-flip off", style = MaterialTheme.typography.labelMedium)
+                    Text(" " + st.twoPlayerView.label, style = MaterialTheme.typography.labelMedium, maxLines = 1)
                 }
             }
         } else {

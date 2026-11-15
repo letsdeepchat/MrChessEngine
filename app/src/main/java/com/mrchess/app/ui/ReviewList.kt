@@ -38,6 +38,7 @@ data class CloudUi(
     val onSignIn: () -> Unit,
     val onSignOut: () -> Unit,
     val onSync: () -> Unit,
+    val name: String? = null,
 )
 
 @Composable
@@ -113,7 +114,8 @@ private fun CloudCard(cloud: CloudUi) {
                     FilledTonalButton(onClick = cloud.onSignIn, modifier = Modifier.padding(top = 6.dp)) { Text("Sign in with Google to sync history") }
                 }
                 else -> {
-                    Text("Synced as ${cloud.account}", fontWeight = FontWeight.SemiBold)
+                    Text(cloud.name ?: "Signed in", fontWeight = FontWeight.SemiBold)
+                    Text("${cloud.account} · games sync automatically", style = MaterialTheme.typography.bodySmall)
                     Row(horizontalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.padding(top = 6.dp)) {
                         OutlinedButton(onClick = cloud.onSync) { Text("Sync now") }
                         TextButton(onClick = cloud.onSignOut) { Text("Sign out") }

@@ -28,14 +28,26 @@ import kotlinx.coroutines.launch
 
 enum class SessionMode { PLAY_AI, TWO_PLAYER, IMPORT_ANALYSIS, POST_GAME_REVIEW }
 
+/** How the Two Player board faces the players. */
+enum class TwoPlayerView(val label: String) {
+    /** Phone flat between two players sitting opposite: board fixed, Black's pieces drawn upside down. */
+    TABLETOP("Tabletop (Opposite)"),
+    /** One phone handed back and forth: the whole board turns to the side to move. */
+    PASS_AND_PLAY("Pass & Play (Flip)"),
+    /** Static, White at the bottom (self-analysis). */
+    FIXED("Fixed (White Bottom)");
+
+    fun next(): TwoPlayerView = entries[(ordinal + 1) % entries.size]
+}
+
 data class WorkspaceState(
     val mode: SessionMode,
     val timeline: GameTimeline = GameTimeline(),
     val userSide: Side = Side.WHITE,
     val elo: Int = 1500,
     val flipped: Boolean = false,
-    /** Two Player only: turn the board 180° after every move so the side to move is at the bottom. */
-    val autoFlip: Boolean = mode == SessionMode.TWO_PLAYER,
+    /** Two Player only: how the board faces the two players. */
+    val twoPlayerView: TwoPlayerView = TwoPlayerView.TABLETOP,
     /** Free moves for both sides without engine replies (always on for import/review). */
     val analysisMode: Boolean = mode == SessionMode.IMPORT_ANALYSIS || mode == SessionMode.POST_GAME_REVIEW,
     val liveCoach: Boolean = false,
@@ -57,6 +69,10 @@ data class WorkspaceState(
     val title: String = "",
 ) {
     val position: Position get() = timeline.position
+    /** Turn the board 180° after every move so the side to move is at the bottom. */
+    val autoFlip: Boolean get() = mode == SessionMode.TWO_PLAYER && twoPlayerView == TwoPlayerView.PASS_AND_PLAY
+    /** Draw Black's pieces (and Black's turn label) upside down for the player sitting opposite. */
+    val tabletop: Boolean get() = mode == SessionMode.TWO_PLAYER && twoPlayerView == TwoPlayerView.TABLETOP
     val result: GameResult get() = timeline.resultAtCurrent()
     val gameOver: Boolean get() = result != GameResult.ONGOING
     val currentHint: Explanation? get() = hint?.takeIf { hintFen == position.toFen() }
@@ -118,7 +134,7 @@ class WorkspaceController(
         val t = GameTimeline(tags = mapOf("White" to if (side == Side.WHITE) "You" else engine, "Black" to if (side == Side.BLACK) "You" else engine))
         _state.value = WorkspaceState(
             mode = s.mode, timeline = t, userSide = side, elo = elo, flipped = side == Side.BLACK,
-            liveCoach = s.liveCoach, cardOpen = s.liveCoach, autoFlip = s.autoFlip, title = defaultTitle(s.mode, elo),
+            liveCoach = s.liveCoach, cardOpen = s.liveCoach, twoPlayerView = s.twoPlayerView, title = defaultTitle(s.mode, elo),
         )
         recordId = null
         summaryWhenDone = false
@@ -128,7 +144,7 @@ class WorkspaceController(
 
     fun newTwoPlayerGame() {
         val t = GameTimeline(tags = mapOf("White" to "Player 1", "Black" to "Player 2"))
-        _state.value = WorkspaceState(s.mode, timeline = t, autoFlip = s.autoFlip, liveCoach = s.liveCoach, cardOpen = s.liveCoach, title = "Two Player")
+        _state.value = WorkspaceState(s.mode, timeline = t, twoPlayerView = s.twoPlayerView, liveCoach = s.liveCoach, cardOpen = s.liveCoach, title = "Two Player")
         recordId = null
         reschedule()
     }
@@ -213,15 +229,13 @@ class WorkspaceController(
 
     fun flip() = _state.update { it.copy(flipped = !it.flipped) }
     /**
-     * Top-bar rotate button. Two Player: toggles auto-flip (turning it on immediately faces the
-     * side to move; turning it off flips the board once). Other modes: flips the board.
+     * Top-bar button. Two Player: cycles Tabletop → Pass & Play → Fixed (Tabletop and Fixed keep
+     * White at the bottom; Pass & Play immediately faces the side to move). Other modes: flips the board.
      */
     fun rotateButton() = _state.update {
-        when {
-            it.mode != SessionMode.TWO_PLAYER -> it.copy(flipped = !it.flipped)
-            !it.autoFlip -> it.copy(autoFlip = true, flipped = it.position.sideToMove == Side.BLACK)
-            else -> it.copy(autoFlip = false, flipped = !it.flipped)
-        }
+        if (it.mode != SessionMode.TWO_PLAYER) return@update it.copy(flipped = !it.flipped)
+        val v = it.twoPlayerView.next()
+        it.copy(twoPlayerView = v, flipped = v == TwoPlayerView.PASS_AND_PLAY && it.position.sideToMove == Side.BLACK)
     }
 
     fun toggleAnalysisMode() {
