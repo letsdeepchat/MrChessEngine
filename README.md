@@ -15,11 +15,15 @@ recogniser all run on the device.
 
 | | |
 |---|---|
-| **Play vs engine** | Elo slider from 800 to 3200. 1320–3190 uses Stockfish `UCI_Elo`, below that it uses `Skill Level`, and the far right turns the limiter off (full NNUE strength). You can play either colour, undo, resign, and promote. |
-| **Best move + why** | The hint always runs at full strength with MultiPV 2. It shows the best move as an arrow, the eval, a 3-ply line, the second-best move and how much worse it is, and the reasons (see below). |
-| **Live coach / Analysis mode** | Analysis mode lets you move both sides. With *Live coach* on, every position is analysed automatically. |
-| **Import** | Paste a FEN or PGN, or share/pick a screenshot. The screenshot goes through OpenCV board detection and a 13-class INT8 TFLite tile classifier, then you confirm side-to-move and orientation before analysing or playing from that position. |
-| **Game review** | Every finished game is saved as PGN. The review gives Lichess-style win% loss per move (inaccuracy/mistake/blunder at 10/20/30), the Lichess accuracy formula, and for each mistake: the better move, why it's better, and the refutation of the move that was played. |
+| **Four tabs** | **Play** (you vs Stockfish), **Two Player** (pass-and-play on one phone, optional auto-flip), **Import** (FEN / PGN / screenshot), **Review** (your saved games). All four use the same board workspace. |
+| **Thumb-zone layout** | Fixed layout from top to bottom: header (48dp), move strip (40dp), free space, full-width board, action bar (48dp), mode bar (44dp), tabs. The board sits low enough to reach with one thumb, and pop-ups float over the free space, so the board never moves. |
+| **Move navigation** | `|<` `<` `>` `>|` plus a move strip you can tap to jump to any move. If you go back and play a different move, the later moves are dropped and the game continues from your new move (Stockfish replies in Play). |
+| **Best move + why / Live coach** | A floating card you can close with × or by swiping. It shows the best move as a blue arrow, the eval, tactic/position tags, 2–3 reasons, the expected continuation and the 2nd-best move. Live coach keeps analysing while the card is hidden, and the "Show coach" pill brings it back. |
+| **Read aloud** | The speaker button reads the card using the phone's offline text-to-speech, with chess notation spoken naturally ("Bxf7+" is read as "Bishop takes f7, check"). It only speaks when you tap it. |
+| **Board sounds** | Move, capture, castle, check and game-end sounds play through one `SoundPool` that never takes audio focus, so music and speech are not interrupted on every move. |
+| **Move quality** | Each move gets a badge: Brilliant `!!`, Great `!`, Best `★`, Good, Inaccuracy `?!`, Mistake `?` or Blunder `??`. It is based on Stockfish MultiPV-2 centipawn differences and shown on the board and in the move strip. |
+| **Summary pop-up** | Accuracy for each side and a count of each move quality. Tap a count to jump to that move, with the move you played and the best move both drawn as arrows. |
+| **Elo 800 to 3200** | Stockfish `UCI_Elo` covers 1320–3190, `Skill Level` is used below that, and the far right of the slider plays at full strength. |
 
 ### How explanations work (`chesscore/.../explain/MoveExplainer.kt`)
 Stockfish picks the move, and a rule layer explains it by looking at the board before and after

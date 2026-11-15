@@ -14,12 +14,13 @@ data class SavedGame(val file: File, val title: String, val result: String, val 
 class GameStore(context: Context) {
     private val dir = File(context.filesDir, "games").apply { mkdirs() }
 
-    fun save(game: Game): File {
+    /** Saves [game]; pass the file from an earlier save of the same game to overwrite it. */
+    fun save(game: Game, existing: File? = null): File {
         val stamp = SimpleDateFormat("yyyyMMdd_HHmmss", Locale.US).format(Date())
         game.tags.putIfAbsent("Date", SimpleDateFormat("yyyy.MM.dd", Locale.US).format(Date()))
         game.tags.putIfAbsent("Event", "MrChess training game")
         game.tags.putIfAbsent("Site", "Offline")
-        val f = File(dir, "game_$stamp.pgn")
+        val f = existing ?: File(dir, "game_$stamp.pgn")
         f.writeText(game.toPgn())
         return f
     }

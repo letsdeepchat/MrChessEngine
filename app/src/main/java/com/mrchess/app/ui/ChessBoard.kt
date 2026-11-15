@@ -25,8 +25,10 @@ import androidx.compose.ui.graphics.drawscope.DrawScope
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.text.TextStyle
+import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import com.mrchess.core.review.MoveQuality
 import com.mrchess.core.rules.Move
 import com.mrchess.core.rules.Position
 import com.mrchess.core.rules.Side
@@ -56,6 +58,8 @@ fun ChessBoard(
     targets: Set<Int> = emptySet(),
     arrow: Move? = null,
     altArrow: Move? = null,
+    /** Move-quality badge drawn at the top-right corner of a square (usually the last move's destination). */
+    badge: Pair<Int, MoveQuality>? = null,
     onTap: ((Int) -> Unit)? = null,
 ) {
     BoxWithConstraints(modifier.fillMaxWidth().aspectRatio(1f)) {
@@ -91,6 +95,15 @@ fun ChessBoard(
                             if (sq in targets) {
                                 val dot = if (position[sq] != null) cell * 0.9f else cell * 0.3f
                                 Box(Modifier.size(dot).background(Color(0x55000000), CircleShape))
+                            }
+                            if (badge != null && badge.first == sq) {
+                                Box(
+                                    Modifier.align(Alignment.TopEnd).padding(1.dp).size(cell * 0.36f)
+                                        .background(Color(badge.second.color), CircleShape),
+                                    contentAlignment = Alignment.Center,
+                                ) {
+                                    Text(badge.second.symbol, color = Color.White, fontSize = with(LocalDensity.current) { (cell * 0.2f).toSp() }, fontWeight = FontWeight.Bold, maxLines = 1)
+                                }
                             }
                             // Coordinates on the edge squares.
                             if (col == 0) Text("${'1' + rank}", Modifier.align(Alignment.TopStart).padding(2.dp), fontSize = 9.sp, color = if (base == Light) Dark else Light)

@@ -5,9 +5,10 @@ import com.mrchess.core.engine.SearchLimit
 import com.mrchess.core.engine.UciEngine
 import com.mrchess.core.explain.Explanation
 import com.mrchess.core.explain.MoveExplainer
-import com.mrchess.core.review.GameReview
-import com.mrchess.core.review.GameReviewer
-import com.mrchess.core.rules.Game
+import com.mrchess.core.engine.SearchResult
+import com.mrchess.core.review.MoveAnnotation
+import com.mrchess.core.review.MoveQualityClassifier
+import com.mrchess.core.rules.GameTimeline
 import com.mrchess.core.rules.Move
 import com.mrchess.core.rules.Position
 
@@ -46,18 +47,50 @@ class Coach(
         return MoveExplainer.explain(pos, r)
     }
 
-    /** Post-game review at full strength. */
-    suspend fun review(
-        game: Game,
-        limit: SearchLimit = SearchLimit.Depth(14),
-        onProgress: (Int, Int) -> Unit = { _, _ -> },
-    ): GameReview {
+    /** Full-strength analysis (used for move-quality annotation). */
+    suspend fun analyse(pos: Position, limit: SearchLimit, multiPv: Int = 2): SearchResult {
         if (currentStrength != EngineStrength.FULL) {
             engine.configure(EngineStrength.FULL, threads, hashMb)
             currentStrength = EngineStrength.FULL
         }
-        return GameReviewer(engine, limit).review(game, onProgress)
+        if (pos.legalMoves().isEmpty()) return SearchResult(null, null, emptyList())
+        return engine.search(pos.toFen(), limit, multiPv)
     }
 
     fun stop() = engine.stop()
+}
+
+/** Annotates timeline moves with quality badges, caching engine results per position. */
+class TimelineAnnotator(
+    private val analyse: suspend (Position) -> SearchResult,
+) {
+    constructor(coach: Coach, limit: SearchLimit = SearchLimit.Depth(12)) : this({ p -> coach.analyse(p, limit, 2) })
+
+    private val cache = HashMap<String, SearchResult>()
+
+    suspend fun analysis(pos: Position): SearchResult {
+        val key = pos.repetitionKey
+        cache[key]?.let { return it }
+        val r = if (pos.legalMoves().isEmpty()) SearchResult(null, null, emptyList()) else analyse(pos)
+        cache[key] = r
+        return r
+    }
+
+    suspend fun annotate(t: GameTimeline, index: Int): MoveAnnotation {
+        val before = t.positionAt(index)
+        val after = t.positionAt(index + 1)
+        return MoveQualityClassifier.annotate(
+            before, t.nodes[index].move, analysis(before), analysis(after), t.nodes.getOrNull(index - 1)?.move,
+        )
+    }
+
+    /** Annotates every missing move; returns the fully annotated timeline. */
+    suspend fun annotateAll(t: GameTimeline, onProgress: (Int, Int) -> Unit = { _, _ -> }): GameTimeline {
+        var cur = t
+        for (i in t.nodes.indices) {
+            if (cur.nodes[i].annotation == null) cur = cur.annotate(i, annotate(cur, i))
+            onProgress(i + 1, t.nodes.size)
+        }
+        return cur
+    }
 }

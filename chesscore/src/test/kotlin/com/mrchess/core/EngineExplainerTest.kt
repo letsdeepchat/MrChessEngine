@@ -5,8 +5,9 @@ import com.mrchess.core.engine.SearchLimit
 import com.mrchess.core.engine.UciEngine
 import com.mrchess.core.explain.MoveExplainer
 import com.mrchess.core.explain.Tag
-import com.mrchess.core.review.GameReviewer
-import com.mrchess.core.review.MoveClass
+import com.mrchess.core.review.GameSummary
+import com.mrchess.core.review.MoveQuality
+import com.mrchess.core.rules.GameTimeline
 import com.mrchess.core.rules.Pgn
 import com.mrchess.core.rules.Position
 import kotlinx.coroutines.launch
@@ -85,16 +86,17 @@ class EngineExplainerTest {
         e.configure(EngineStrength.FULL)
     }
 
-    @Test fun reviewFindsBlunder() = runBlocking {
+    @Test fun annotatorFlagsBlunderAndSummary() = runBlocking {
         val e = eng()
-        e.configure(EngineStrength.FULL)
-        // 3...Qh4?? hangs nothing, but 4.Qxf7# style: scholar's mate with Black blundering 3...Nf6??
+        val coach = Coach(e)
         val g = Pgn.parse("1. e4 e5 2. Bc4 Nc6 3. Qh5 Nf6 4. Qxf7# 1-0")
-        val review = GameReviewer(e, SearchLimit.Depth(14)).review(g)
-        review.moves.forEach { println("${it.ply} ${it.san} ${it.classification} loss=${"%.1f".format(it.winPercentLoss)} :: ${it.comment}") }
-        println("Accuracy W=${review.accuracyWhite} B=${review.accuracyBlack}")
-        assertEquals(MoveClass.BLUNDER, review.moves[5].classification)
-        assertEquals("Qxf7#", review.moves[5].refutation?.san)
+        val t = TimelineAnnotator(coach, SearchLimit.Depth(14)).annotateAll(GameTimeline.fromGame(g))
+        t.nodes.forEach { println("${it.san} ${it.moveQualityBadge} d=${it.annotation?.deltaCp} :: ${it.rationaleText}") }
+        assertEquals(MoveQuality.BLUNDER, t.nodes[5].moveQualityBadge)
+        assertEquals("Qxf7#", t.nodes[5].annotation?.refutation?.san)
+        val sum = GameSummary.of(t.nodes.map { it.mover to it.annotation })
+        println("acc W=${sum.accuracyWhite} B=${sum.accuracyBlack} ${sum.counts}")
+        assertEquals(5, sum.firstIndex[com.mrchess.core.rules.Side.BLACK]?.get(MoveQuality.BLUNDER))
     }
 }
 
