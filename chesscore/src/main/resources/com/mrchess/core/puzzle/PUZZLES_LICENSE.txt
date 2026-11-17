@@ -1,0 +1,3 @@
+puzzles_gm.csv: puzzles rated 2500+ selected from the Lichess puzzle database
+(https://database.lichess.org/#puzzles), released under CC0 1.0 (public domain).
+Regenerate with scripts/extract_gm_puzzles.py (see .github/workflows/puzzles.yml on the puzzle-data branch).

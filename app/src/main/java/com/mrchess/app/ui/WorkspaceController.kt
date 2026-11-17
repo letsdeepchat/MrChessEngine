@@ -28,16 +28,14 @@ import kotlinx.coroutines.launch
 
 enum class SessionMode { PLAY_AI, TWO_PLAYER, IMPORT_ANALYSIS, POST_GAME_REVIEW }
 
-/** How the Two Player board faces the players. */
-enum class TwoPlayerView(val label: String) {
-    /** Phone flat between two players sitting opposite: board fixed, Black's pieces drawn upside down. */
-    TABLETOP("Tabletop (Opposite)"),
-    /** One phone handed back and forth: the whole board turns to the side to move. */
-    PASS_AND_PLAY("Pass & Play (Flip)"),
-    /** Static, White at the bottom (self-analysis). */
-    FIXED("Fixed (White Bottom)");
-
-    fun next(): TwoPlayerView = entries[(ordinal + 1) % entries.size]
+/** How the Two Player board faces the players. The board grid only turns in [SOLO_FLIP]. */
+enum class TwoPlayerView(val label: String, val short: String) {
+    /** Players sit opposite each other: White's ranks stay at the bottom; every piece turns 180° on Black's turn. */
+    OPPOSITE("Opposite Players (Piece Flip)", "Opposite"),
+    /** Players sit opposite each other: White's pieces always upright, Black's always upside down. */
+    TABLETOP_SPLIT("Tabletop Split", "Tabletop"),
+    /** One player handing the phone over: the whole board turns 180° to the side to move. */
+    SOLO_FLIP("Solo Pass & Play (Board Flip)", "Board flip"),
 }
 
 data class WorkspaceState(
@@ -47,7 +45,7 @@ data class WorkspaceState(
     val elo: Int = 1500,
     val flipped: Boolean = false,
     /** Two Player only: how the board faces the two players. */
-    val twoPlayerView: TwoPlayerView = TwoPlayerView.TABLETOP,
+    val twoPlayerView: TwoPlayerView = TwoPlayerView.OPPOSITE,
     /** Free moves for both sides without engine replies (always on for import/review). */
     val analysisMode: Boolean = mode == SessionMode.IMPORT_ANALYSIS || mode == SessionMode.POST_GAME_REVIEW,
     val liveCoach: Boolean = false,
@@ -70,9 +68,18 @@ data class WorkspaceState(
 ) {
     val position: Position get() = timeline.position
     /** Turn the board 180° after every move so the side to move is at the bottom. */
-    val autoFlip: Boolean get() = mode == SessionMode.TWO_PLAYER && twoPlayerView == TwoPlayerView.PASS_AND_PLAY
-    /** Draw Black's pieces (and Black's turn label) upside down for the player sitting opposite. */
-    val tabletop: Boolean get() = mode == SessionMode.TWO_PLAYER && twoPlayerView == TwoPlayerView.TABLETOP
+    val autoFlip: Boolean get() = mode == SessionMode.TWO_PLAYER && twoPlayerView == TwoPlayerView.SOLO_FLIP
+    /** Players sit on opposite sides of the phone (the board grid never turns). */
+    val tabletop: Boolean get() = mode == SessionMode.TWO_PLAYER && twoPlayerView != TwoPlayerView.SOLO_FLIP
+    /** Rotation of White's / Black's piece icons in degrees (0 = upright for the bottom player). */
+    val whitePieceRotation: Float get() =
+        if (mode == SessionMode.TWO_PLAYER && twoPlayerView == TwoPlayerView.OPPOSITE && position.sideToMove == Side.BLACK) 180f else 0f
+    val blackPieceRotation: Float get() = when {
+        mode != SessionMode.TWO_PLAYER -> 0f
+        twoPlayerView == TwoPlayerView.TABLETOP_SPLIT -> 180f
+        twoPlayerView == TwoPlayerView.OPPOSITE && position.sideToMove == Side.BLACK -> 180f
+        else -> 0f
+    }
     val result: GameResult get() = timeline.resultAtCurrent()
     val gameOver: Boolean get() = result != GameResult.ONGOING
     val currentHint: Explanation? get() = hint?.takeIf { hintFen == position.toFen() }
@@ -228,15 +235,46 @@ class WorkspaceController(
     // ------------------------------------------------------------------ toggles & actions
 
     fun flip() = _state.update { it.copy(flipped = !it.flipped) }
-    /**
-     * Top-bar button. Two Player: cycles Tabletop → Pass & Play → Fixed (Tabletop and Fixed keep
-     * White at the bottom; Pass & Play immediately faces the side to move). Other modes: flips the board.
-     */
-    fun rotateButton() = _state.update {
-        if (it.mode != SessionMode.TWO_PLAYER) return@update it.copy(flipped = !it.flipped)
-        val v = it.twoPlayerView.next()
-        it.copy(twoPlayerView = v, flipped = v == TwoPlayerView.PASS_AND_PLAY && it.position.sideToMove == Side.BLACK)
+    /** Top-bar rotate button outside Two Player. */
+    fun rotateButton() = _state.update { it.copy(flipped = !it.flipped) }
+
+    /** Two Player orientation. Only Solo Pass & Play turns the board grid. */
+    fun setTwoPlayerView(v: TwoPlayerView) = _state.update {
+        it.copy(twoPlayerView = v, flipped = v == TwoPlayerView.SOLO_FLIP && it.position.sideToMove == Side.BLACK)
     }
+
+    /**
+     * Takes back the last move (Play: your last move and the engine's reply, so it is your turn
+     * again). Clears a resignation.
+     */
+    fun undo() {
+        val t0 = s.timeline.toEnd().let { t -> t.copy(tags = t.tags - "Result" - "Termination") }
+        if (t0.nodes.isEmpty()) return
+        var target = t0.lastPly - 1
+        if (s.mode == SessionMode.PLAY_AI && !s.analysisMode) {
+            while (target > 0 && t0.positionAt(target).sideToMove != s.userSide) target--
+        }
+        val t = t0.copy(nodes = t0.nodes.take(target), currentPly = target)
+        _state.update {
+            it.copy(timeline = t, selected = null, targets = emptySet(), status = null, insightIndex = null,
+                flipped = if (it.autoFlip) t.position.sideToMove == Side.BLACK else it.flipped)
+        }
+        reschedule()
+    }
+
+    /** Resign (Play: you; Two Player: the side to move). */
+    fun resign() {
+        if (s.gameOver || (s.mode != SessionMode.PLAY_AI && s.mode != SessionMode.TWO_PLAYER)) return
+        val loser = if (s.mode == SessionMode.PLAY_AI) s.userSide else s.position.sideToMove
+        val who = if (s.mode == SessionMode.PLAY_AI) "You resigned" else "${loser.label} resigned"
+        val t = s.timeline.toEnd().withTag("Result", if (loser == Side.WHITE) "0-1" else "1-0").withTag("Termination", who)
+        _state.update { it.copy(timeline = t) }
+        onGameOver()
+        reschedule()
+    }
+
+    /** Same settings, fresh board. */
+    fun restart() = if (s.mode == SessionMode.TWO_PLAYER) newTwoPlayerGame() else newGame(s.userSide, s.elo)
 
     fun toggleAnalysisMode() {
         if (s.mode != SessionMode.PLAY_AI) return
@@ -262,14 +300,6 @@ class WorkspaceController(
     fun closeSummary() = _state.update { it.copy(showSummary = false) }
     fun clearError() = _state.update { it.copy(error = null) }
     fun setElo(elo: Int) = _state.update { it.copy(elo = elo) }
-
-    fun resign() {
-        if (s.mode != SessionMode.PLAY_AI || s.gameOver) return
-        val t = s.timeline.toEnd().withTag("Result", if (s.userSide == Side.WHITE) "0-1" else "1-0").withTag("Termination", "You resigned")
-        _state.update { it.copy(timeline = t) }
-        onGameOver()
-        reschedule()
-    }
 
     private fun onGameOver() {
         val st = s

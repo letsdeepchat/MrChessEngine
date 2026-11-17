@@ -15,6 +15,7 @@ enum class MoveQuality(val label: String, val symbol: String, val color: Long) {
     GREAT("Great", "!", 0xFF5C8BB0),
     BEST("Best", "★", 0xFF81B64C),
     GOOD("Good", "✓", 0xFF96BC4B),
+    BOOK("Book", "📖", 0xFFA88865),
     INACCURACY("Inaccuracy", "?!", 0xFFF7C631),
     MISTAKE("Mistake", "?", 0xFFE58F2A),
     BLUNDER("Blunder", "??", 0xFFCA3431),
@@ -24,7 +25,7 @@ enum class MoveQuality(val label: String, val symbol: String, val color: Long) {
 
     companion object {
         /** Order used by the summary table. */
-        val SUMMARY = listOf(BRILLIANT, GREAT, BEST, GOOD, INACCURACY, MISTAKE, BLUNDER)
+        val SUMMARY = listOf(BRILLIANT, GREAT, BEST, GOOD, BOOK, INACCURACY, MISTAKE, BLUNDER)
     }
 }
 
@@ -45,21 +46,27 @@ data class MoveAnnotation(
     /** What the opponent can now do against the played move (only for inaccuracies or worse). */
     val refutation: Explanation?,
     val rationale: String,
+    /** Opening name when the move is (or stays) in the built-in opening book. */
+    val opening: String? = null,
 )
 
 /**
- * Classifies a played move from Stockfish MultiPV-2 evaluations, in centipawns from the mover's
- * perspective. Δ = E_best − E_played.
+ * Classifies a played move with the win-probability model (Lichess / Chess.com style).
+ * Evaluations are from the mover's point of view.
  *
- *  Brilliant  sound sacrifice (≥ 1 pawn net drop over the next 2 plies) with Δ ≤ 15 and E_played ≥ +100,
- *             or the sole winning move (E_best − E_second ≥ 200, Δ ≤ 15) that is not a plain recapture
- *             or check evasion
- *  Great      only good move: E_best − E_second ≥ 120 and Δ ≤ 15
- *  Best       Δ ≤ 10 (the engine's top move counts as Δ = 0)
- *  Good       10 < Δ ≤ 45
- *  Inaccuracy 45 < Δ ≤ 100
- *  Mistake    100 < Δ ≤ 250
- *  Blunder    Δ > 250, or the move allows a forced mate that the best move avoided
+ *   Win% = 50 + 50 · (2 / (1 + e^(−0.00368208 · cp)) − 1)
+ *   winProbLoss = max(0, Win%(best) − Win%(played)),  cpLoss = max(0, cp(best) − cp(played))
+ *
+ *  Book        in the opening book (or within the first 6 plies with cpLoss < 35) and winProbLoss ≤ 7
+ *  Brilliant   sacrifice of ≥ 2 pawns of material, winProbLoss ≤ 2.5 and Win% after ≥ 45
+ *  Great       best move when the 2nd-best is ≥ 12 Win% worse (the only move that holds)
+ *  Best        the engine's top move, or winProbLoss ≤ 1.5
+ *  Good        1.5 < winProbLoss ≤ 7
+ *  Inaccuracy  7 < winProbLoss ≤ 14 and cpLoss ≥ 50
+ *  Mistake     14 < winProbLoss ≤ 24 and cpLoss ≥ 100
+ *  Blunder     winProbLoss > 24 and cpLoss ≥ 200 and still not winning by more than +6, or a move that
+ *              allows a forced mate the best move avoided
+ * A move that misses a band's centipawn floor drops to the next milder band.
  */
 object MoveQualityClassifier {
 
@@ -68,27 +75,32 @@ object MoveQualityClassifier {
         val eSecond: Score?,
         val ePlayed: Score,
         val playedIsBest: Boolean,
+        /** Material given up over the next two plies is at least 200 cp. */
         val materialSacrifice: Boolean,
         val onlyLegalMove: Boolean,
+        /** Check evasions, recaptures and mate-in-one are never Brilliant or Great. */
         val routineMove: Boolean,
+        val book: Boolean = false,
     )
 
     fun classify(i: Inputs): MoveQuality {
         if (i.onlyLegalMove) return MoveQuality.FORCED
-        val delta = if (i.playedIsBest) 0 else MoveExplainer.cpDelta(i.eBest, i.ePlayed)
-        val gap = i.eSecond?.let { MoveExplainer.cpDelta(i.eBest, it) } ?: 0
+        val wpBest = winPct(i.eBest)
+        val wpAfter = if (i.playedIsBest) wpBest else winPct(i.ePlayed)
+        val loss = (wpBest - wpAfter).coerceAtLeast(0.0)
+        val cpLoss = if (i.playedIsBest) 0 else MoveExplainer.cpDelta(i.eBest, i.ePlayed)
+        val cpAfter = i.ePlayed.comparable.coerceIn(-2000, 2000)
         val allowsMate = (i.ePlayed.mate ?: 0) < 0 && (i.eBest.mate ?: 1) > 0
-        val played = i.ePlayed.comparable.coerceIn(-2000, 2000)
-        val secondValue = i.eSecond?.comparable?.coerceIn(-2000, 2000) ?: 0
+        val gap = i.eSecond?.let { wpBest - winPct(it) } ?: 0.0
         return when {
-            allowsMate || delta > 250 -> MoveQuality.BLUNDER
-            delta > 100 -> MoveQuality.MISTAKE
-            delta > 45 -> MoveQuality.INACCURACY
-            delta <= 15 && i.materialSacrifice && played >= 100 -> MoveQuality.BRILLIANT
-            // "Sole winning move": the alternatives must not win too, and it must not be routine.
-            delta <= 15 && gap >= 200 && !i.routineMove && secondValue < 150 -> MoveQuality.BRILLIANT
-            delta <= 15 && gap >= 120 && !i.routineMove -> MoveQuality.GREAT
-            delta <= 10 -> MoveQuality.BEST
+            i.book && loss <= 7.0 -> MoveQuality.BOOK
+            allowsMate -> MoveQuality.BLUNDER
+            loss > 24.0 && cpLoss >= 200 && cpAfter <= 600 -> MoveQuality.BLUNDER
+            loss > 14.0 && cpLoss >= 100 -> MoveQuality.MISTAKE
+            loss > 7.0 && cpLoss >= 50 -> MoveQuality.INACCURACY
+            i.materialSacrifice && !i.routineMove && loss <= 2.5 && wpAfter >= 45.0 -> MoveQuality.BRILLIANT
+            i.playedIsBest || loss <= 1.5 ->
+                if (gap >= 12.0 && !i.routineMove) MoveQuality.GREAT else MoveQuality.BEST
             else -> MoveQuality.GOOD
         }
     }
@@ -115,14 +127,19 @@ object MoveQualityClassifier {
         }
         val playedIsBest = resBefore.bestMove == move.uci
         val eSecond = resBefore.second?.score
-        val sacrifice = materialDropOverTwoPlies(before, move, resAfter.bestMove, us) >= 100
+        val sacrifice = materialDropOverTwoPlies(before, move, resAfter.bestMove, us) >= 200
         // Recaptures, check evasions and mate-in-one are never "brilliant"/"great" however forced they are.
         val routine = before.inCheck() || after.isCheckmate ||
             (previousMove != null && previousMove.to == move.to && before.isCapture(move))
-        val quality = classify(
-            Inputs(eBest, eSecond, ePlayed, playedIsBest, sacrifice, before.legalMoves().size == 1, routine),
-        )
         val delta = if (playedIsBest) 0 else MoveExplainer.cpDelta(eBest, ePlayed)
+        // Opening book: the game must still be in theory before this move.
+        val ply = (before.fullmoveNumber - 1) * 2 + if (us == Side.BLACK) 1 else 0
+        val opening = OpeningBook.lookup(after)
+        val book = ply < OpeningBook.MAX_PLY && OpeningBook.inBook(before) &&
+            (opening != null || (ply < 6 && delta < 35))
+        val quality = classify(
+            Inputs(eBest, eSecond, ePlayed, playedIsBest, sacrifice, before.legalMoves().size == 1, routine, book),
+        )
         val toWhite = { s: Score -> if (us == Side.WHITE) s else s.negate() }
         val bestExpl = if (!playedIsBest && quality != MoveQuality.FORCED) MoveExplainer.explain(before, resBefore) else null
         val refutation = if (quality.isError && resAfter.best != null) MoveExplainer.explain(after, resAfter) else null
@@ -132,20 +149,21 @@ object MoveQualityClassifier {
             append(
                 when {
                     quality == MoveQuality.BEST -> "$san is the best move"
+                    quality == MoveQuality.BOOK -> "$san is a book move" + (opening?.let { " (${it.eco} ${it.name})" } ?: "")
                     quality == MoveQuality.FORCED -> "$san was the only legal move"
                     quality.isError -> "$san is ${article(word)} $word"
                     else -> "$san is ${article(word)} $word move"
                 },
             )
-            if (delta > 0) append(" (${MoveExplainer.deltaWords(delta)} worse than the best)")
+            if (delta > 0 && quality != MoveQuality.BOOK) append(" (${MoveExplainer.deltaWords(delta)} worse than the best)")
             append('.')
             if (quality == MoveQuality.BRILLIANT && sacrifice) append(" A sound sacrifice: material is given up for a lasting advantage.")
-            if (quality == MoveQuality.GREAT || (quality == MoveQuality.BRILLIANT && !sacrifice))
+            if (quality == MoveQuality.GREAT)
                 append(" It was the only good move; the alternatives lose ground.")
             refutation?.let { r ->
                 append(" It allows ${r.san}: ${r.reasons.firstOrNull()?.replaceFirstChar { it.lowercase() } ?: ""}")
             }
-            bestExpl?.let { b ->
+            bestExpl?.takeIf { quality != MoveQuality.BOOK }?.let { b ->
                 if (quality.isError || quality == MoveQuality.GOOD) append(" Better was ${b.san}: ${b.reasons.firstOrNull() ?: b.headline}")
             }
         }
@@ -161,6 +179,7 @@ object MoveQualityClassifier {
             bestExplanation = bestExpl,
             refutation = refutation,
             rationale = rationale,
+            opening = opening?.name,
         )
     }
 
@@ -172,9 +191,10 @@ object MoveQualityClassifier {
         return -(if (us == Side.WHITE) diff else -diff)
     }
 
+    /** Expected win percentage for the side the score belongs to (mates count as 0 / 100). */
     fun winPct(s: Score): Double = 50.0 + 50.0 * s.winningChances
 
-    /** Lichess per-move accuracy from win% loss. */
+    /** Per-move accuracy from win% loss (Book moves count as 100). */
     fun moveAccuracy(winPercentLoss: Double): Double =
         (103.1668 * exp(-0.04354 * winPercentLoss) - 3.1669).coerceIn(0.0, 100.0)
 
@@ -203,7 +223,7 @@ data class GameSummary(
                 if (a == null) return@forEachIndexed
                 counts.getValue(side).merge(a.quality, 1, Int::plus)
                 first.getValue(side).putIfAbsent(a.quality, i)
-                acc.getValue(side) += MoveQualityClassifier.moveAccuracy(a.winPercentLoss)
+                acc.getValue(side) += if (a.quality == MoveQuality.BOOK) 100.0 else MoveQualityClassifier.moveAccuracy(a.winPercentLoss)
             }
             return GameSummary(
                 acc.getValue(Side.WHITE).takeIf { it.isNotEmpty() }?.average(),

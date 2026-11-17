@@ -6,6 +6,7 @@ import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import com.mrchess.app.MrChessApp
 import android.app.Activity
+import com.mrchess.app.audio.SoundPack
 import com.mrchess.app.data.GameRecordEntity
 import com.mrchess.app.vision.ImageToFen
 import com.mrchess.app.vision.Recognition
@@ -22,7 +23,7 @@ import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 
-enum class Screen { PLAY, TWO_PLAYER, IMPORT, REVIEW }
+enum class Screen { PLAY, TWO_PLAYER, IMPORT, REVIEW, PUZZLES }
 
 data class ImportState(
     val text: String = "",
@@ -49,19 +50,22 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
     val importState: StateFlow<ImportState> = _import
     val saved: StateFlow<List<GameRecordEntity>> =
         mrApp.history.games.stateIn(viewModelScope, SharingStarted.Eagerly, emptyList())
-    val soundOn: StateFlow<Boolean> = mrApp.settings.soundOn.stateIn(viewModelScope, SharingStarted.Eagerly, true)
+    val soundPack: StateFlow<SoundPack> = mrApp.settings.soundPack.stateIn(viewModelScope, SharingStarted.Eagerly, SoundPack.DEFAULT)
     val boardTheme: StateFlow<BoardTheme> = mrApp.settings.boardTheme.stateIn(viewModelScope, SharingStarted.Eagerly, BoardTheme.DEFAULT)
     val cloudAvailable: Boolean get() = history.cloud.available
     val cloudAccount: StateFlow<String?> get() = history.cloud.account
     val cloudName: StateFlow<String?> get() = history.cloud.profileName
     private val _showThemeSheet = MutableStateFlow(false)
     val showThemeSheet: StateFlow<Boolean> = _showThemeSheet
+    private val _showSoundSheet = MutableStateFlow(false)
+    val showSoundSheet: StateFlow<Boolean> = _showSoundSheet
     private val _message = MutableStateFlow<String?>(null)
     val message: StateFlow<String?> = _message
 
     private fun controller(mode: SessionMode) =
         WorkspaceController(ctx, viewModelScope, mode, sounds, history)
 
+    val puzzles by lazy { PuzzleController(viewModelScope, mrApp.settings, sounds) }
     val play = controller(SessionMode.PLAY_AI)
     val twoPlayer = controller(SessionMode.TWO_PLAYER).also { it.newTwoPlayerGame() }
     private val _importWs = MutableStateFlow<WorkspaceController?>(null)
@@ -76,7 +80,7 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
             history.migrateLegacyPgnFiles()
             history.sync()
         }
-        viewModelScope.launch { soundOn.collect { sounds.enabled = it } }
+        viewModelScope.launch { soundPack.collect { sounds.pack = it } }
     }
 
     fun go(s: Screen) {
@@ -94,8 +98,11 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         _reviewWs.value?.setActive(s == Screen.REVIEW)
     }
 
-    fun toggleSound() {
-        viewModelScope.launch { mrApp.settings.setSoundOn(!soundOn.value) }
+    fun openSoundSheet() { _showSoundSheet.value = true }
+    fun closeSoundSheet() { _showSoundSheet.value = false }
+    fun setSoundPack(p: SoundPack) {
+        sounds.preview(p)
+        viewModelScope.launch { mrApp.settings.setSoundPack(p) }
     }
 
     fun openThemeSheet() { _showThemeSheet.value = true }

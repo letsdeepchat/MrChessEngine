@@ -15,6 +15,7 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Analytics
+import androidx.compose.material.icons.filled.Extension
 import androidx.compose.material.icons.filled.FileOpen
 import androidx.compose.material.icons.filled.People
 import androidx.compose.material.icons.filled.SportsEsports
@@ -40,7 +41,9 @@ import com.mrchess.app.ui.HeaderAction
 import com.mrchess.app.ui.LocalBoardTheme
 import com.mrchess.app.ui.ImportScreen
 import com.mrchess.app.ui.MainViewModel
+import com.mrchess.app.ui.PuzzleScreen
 import com.mrchess.app.ui.ReviewList
+import com.mrchess.app.ui.SoundPackSheet
 import com.mrchess.app.ui.Screen
 import com.mrchess.app.ui.UnifiedChessWorkspace
 import com.mrchess.app.ui.WorkspaceController
@@ -61,20 +64,20 @@ class MainActivity : ComponentActivity() {
                 val reviewWs by vm.reviewWorkspace.collectAsStateWithLifecycle()
                 val importState by vm.importState.collectAsStateWithLifecycle()
                 val saved by vm.saved.collectAsStateWithLifecycle()
-                val soundOn by vm.soundOn.collectAsStateWithLifecycle()
+                val soundPack by vm.soundPack.collectAsStateWithLifecycle()
+                val soundSheet by vm.showSoundSheet.collectAsStateWithLifecycle()
                 val theme by vm.boardTheme.collectAsStateWithLifecycle()
                 val themeSheet by vm.showThemeSheet.collectAsStateWithLifecycle()
                 val naturalVoice by vm.narrator.hasNaturalVoice.collectAsStateWithLifecycle()
                 val account by vm.cloudAccount.collectAsStateWithLifecycle()
                 val accountName by vm.cloudName.collectAsStateWithLifecycle()
                 val message by vm.message.collectAsStateWithLifecycle()
-                // Shared ⋮ menu entries for every board.
+                // ⋮ menu: customisation only (game actions are one tap away under the board).
                 val common = buildList {
-                    add(HeaderAction("Board theme…") { vm.openThemeSheet() })
-                    add(HeaderAction(if (soundOn) "Board sounds: on" else "Board sounds: off") { vm.toggleSound() })
+                    add(HeaderAction("Board theme: ${theme.label}…") { vm.openThemeSheet() })
+                    add(HeaderAction("Board sounds: ${soundPack.label}…") { vm.openSoundSheet() })
                     if (!naturalVoice) add(HeaderAction("Download natural voice") { vm.downloadNaturalVoice() })
                 }
-                val soundAction = common
                 Scaffold(
                     bottomBar = {
                         NavigationBar(Modifier.height(64.dp)) {
@@ -82,23 +85,23 @@ class MainActivity : ComponentActivity() {
                             NavigationBarItem(screen == Screen.TWO_PLAYER, { vm.go(Screen.TWO_PLAYER) }, { Icon(Icons.Filled.People, null) }, label = { Text("Two Player") })
                             NavigationBarItem(screen == Screen.IMPORT, { vm.go(Screen.IMPORT) }, { Icon(Icons.Filled.FileOpen, null) }, label = { Text("Import") })
                             NavigationBarItem(screen == Screen.REVIEW, { vm.go(Screen.REVIEW) }, { Icon(Icons.Filled.Analytics, null) }, label = { Text("Review") })
+                            NavigationBarItem(screen == Screen.PUZZLES, { vm.go(Screen.PUZZLES) }, { Icon(Icons.Filled.Extension, null) }, label = { Text("Puzzles") })
                         }
                     },
                 ) { pad ->
                     Box(Modifier.fillMaxSize().padding(pad)) {
                         when (screen) {
-                            Screen.PLAY -> Workspace(vm.play, listOf(
-                                HeaderAction("Resign") { vm.play.resign() },
-                                HeaderAction("Review this game") { vm.reviewFrom(vm.play) },
-                            ) + soundAction)
-                            Screen.TWO_PLAYER -> Workspace(vm.twoPlayer, listOf(
-                                HeaderAction("Review this game") { vm.reviewFrom(vm.twoPlayer) },
-                            ) + soundAction)
+                            Screen.PLAY -> Workspace(vm.play, common, onReview = { vm.reviewFrom(vm.play) })
+                            Screen.TWO_PLAYER -> Workspace(vm.twoPlayer, common, onReview = { vm.reviewFrom(vm.twoPlayer) })
                             Screen.IMPORT -> importWs?.let { c ->
-                                Workspace(c, listOf(HeaderAction("New import") { vm.closeImported() }) + soundAction)
+                                Workspace(c, common, onReview = { vm.reviewFrom(c) }, onClose = vm::closeImported)
                             } ?: ImportScreen(vm, importState)
+                            Screen.PUZZLES -> {
+                                val ps by vm.puzzles.state.collectAsStateWithLifecycle()
+                                PuzzleScreen(ps, vm.puzzles, common)
+                            }
                             Screen.REVIEW -> reviewWs?.let { c ->
-                                Workspace(c, listOf(HeaderAction("Back to games") { vm.closeReview() }) + soundAction)
+                                Workspace(c, common, onClose = vm::closeReview)
                             } ?: ReviewList(
                                 saved,
                                 CloudUi(vm.cloudAvailable, account, { vm.signIn(this@MainActivity) }, vm::signOut, vm::syncNow, accountName),
@@ -108,6 +111,7 @@ class MainActivity : ComponentActivity() {
                     }
                 }
                 if (themeSheet) BoardThemeSheet(theme, vm::setBoardTheme, vm::closeThemeSheet)
+                if (soundSheet) SoundPackSheet(soundPack, vm::setSoundPack, vm::closeSoundSheet)
                 message?.let { m ->
                     AlertDialog(onDismissRequest = vm::clearMessage, confirmButton = { TextButton(onClick = vm::clearMessage) { Text("OK") } }, text = { Text(m) })
                 }
@@ -117,10 +121,10 @@ class MainActivity : ComponentActivity() {
     }
 
     @Composable
-    private fun Workspace(c: WorkspaceController, menu: List<HeaderAction>) {
+    private fun Workspace(c: WorkspaceController, menu: List<HeaderAction>, onReview: () -> Unit = {}, onClose: () -> Unit = {}) {
         val st by c.state.collectAsStateWithLifecycle()
         val speaking by vm.narrator.speaking.collectAsStateWithLifecycle()
-        UnifiedChessWorkspace(st, c, vm.narrator, speaking, menu)
+        UnifiedChessWorkspace(st, c, vm.narrator, speaking, menu, onReview, onClose)
     }
 
     override fun onStop() {

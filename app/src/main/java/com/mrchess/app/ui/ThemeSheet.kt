@@ -65,3 +65,25 @@ fun BoardThemeSheet(current: BoardTheme, onPick: (BoardTheme) -> Unit, onDismiss
         }
     }
 }
+
+/** Bottom sheet listing the board sound packs; tapping one selects it and plays a sample. */
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+fun SoundPackSheet(current: com.mrchess.app.audio.SoundPack, onPick: (com.mrchess.app.audio.SoundPack) -> Unit, onDismiss: () -> Unit) {
+    ModalBottomSheet(onDismissRequest = onDismiss) {
+        Column(Modifier.padding(horizontal = 16.dp).padding(bottom = 24.dp)) {
+            Text("Board sounds", style = MaterialTheme.typography.titleMedium)
+            Text("Tap a pack to hear it.", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+            Spacer(Modifier.height(8.dp))
+            com.mrchess.app.audio.SoundPack.entries.forEach { p ->
+                Row(
+                    Modifier.fillMaxWidth().clip(RoundedCornerShape(8.dp)).clickable { onPick(p) }.padding(vertical = 4.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    androidx.compose.material3.RadioButton(selected = p == current, onClick = { onPick(p) })
+                    Text(p.label, fontWeight = if (p == current) FontWeight.Bold else FontWeight.Normal)
+                }
+            }
+        }
+    }
+}

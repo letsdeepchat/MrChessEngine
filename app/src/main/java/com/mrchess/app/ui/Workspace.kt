@@ -30,7 +30,16 @@ import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.filled.ArrowBack
+import androidx.compose.material.icons.automirrored.filled.Undo
 import androidx.compose.material.icons.automirrored.filled.VolumeUp
+import androidx.compose.material.icons.filled.Add
+import androidx.compose.material.icons.filled.ArrowDropDown
+import androidx.compose.material.icons.filled.Assessment
+import androidx.compose.material.icons.filled.Check
+import androidx.compose.material.icons.filled.Flag
+import androidx.compose.material.icons.filled.QueryStats
+import androidx.compose.material.icons.filled.RestartAlt
 import androidx.compose.material.icons.filled.ChevronLeft
 import androidx.compose.material.icons.filled.ChevronRight
 import androidx.compose.material.icons.filled.Close
@@ -70,6 +79,8 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.draw.alpha
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.text.font.FontWeight
@@ -99,9 +110,13 @@ private val HeaderH = 48.dp
 private val StripH = 40.dp
 private val ActionH = 48.dp
 private val ModeH = 44.dp
+private val GameBarH = 52.dp
 
-/** Header actions that differ between sessions. */
+/** ⋮ menu entries (customisation only: themes, sounds, voice). */
 data class HeaderAction(val label: String, val onClick: () -> Unit)
+
+/** A one-tap icon + label button in the bar under the board. */
+data class BarAction(val icon: ImageVector, val label: String, val enabled: Boolean = true, val onClick: () -> Unit)
 
 /**
  * The one board screen used by Play, Two Player, Import and Review. The vertical layout is
@@ -115,18 +130,40 @@ fun UnifiedChessWorkspace(
     narrator: ChessVoiceNarrator,
     speaking: Boolean,
     menu: List<HeaderAction>,
+    /** Opens this game in the Review tab. */
+    onReview: () -> Unit = {},
+    /** Import: start a new import. Review: back to the saved games. */
+    onClose: () -> Unit = {},
 ) {
     var showNewGame by remember { mutableStateOf(false) }
+    var confirmResign by remember { mutableStateOf(false) }
+    val hasMoves = st.timeline.nodes.isNotEmpty()
+    val actions = when (st.mode) {
+        SessionMode.PLAY_AI, SessionMode.TWO_PLAYER -> listOf(
+            BarAction(Icons.Filled.Add, "New Game") { if (st.mode == SessionMode.PLAY_AI) showNewGame = true else c.newTwoPlayerGame() },
+            if (st.gameOver) BarAction(Icons.Filled.RestartAlt, "Restart") { c.restart() }
+            else BarAction(Icons.Filled.Flag, "Resign", enabled = hasMoves) { confirmResign = true },
+            BarAction(Icons.AutoMirrored.Filled.Undo, "Undo", enabled = hasMoves) { c.undo() },
+            BarAction(Icons.Filled.QueryStats, "Review", enabled = hasMoves, onClick = onReview),
+        )
+        SessionMode.IMPORT_ANALYSIS -> listOf(
+            BarAction(Icons.Filled.Add, "New import", onClick = onClose),
+            BarAction(Icons.AutoMirrored.Filled.Undo, "Undo", enabled = hasMoves) { c.undo() },
+            BarAction(Icons.Filled.QueryStats, "Review", enabled = hasMoves, onClick = onReview),
+            BarAction(Icons.Filled.Assessment, "Summary", onClick = c::openSummary),
+        )
+        SessionMode.POST_GAME_REVIEW -> listOf(
+            BarAction(Icons.AutoMirrored.Filled.ArrowBack, "Games", onClick = onClose),
+            BarAction(Icons.Filled.Assessment, "Summary", onClick = c::openSummary),
+            BarAction(Icons.Filled.Lightbulb, "Best move", enabled = !st.gameOver, onClick = c::requestHint),
+            BarAction(Icons.Filled.SwapVert, "Flip", onClick = c::flip),
+        )
+    }
     BoxWithConstraints(Modifier.fillMaxSize()) {
         val boardSize = maxWidth
-        val slack = maxHeight - HeaderH - StripH - boardSize - ActionH - ModeH
+        val slack = maxHeight - HeaderH - StripH - boardSize - ActionH - GameBarH - ModeH
         Column(Modifier.fillMaxSize()) {
-            val extra = when (st.mode) {
-                SessionMode.PLAY_AI -> listOf(HeaderAction("New game…") { showNewGame = true })
-                SessionMode.TWO_PLAYER -> listOf(HeaderAction("New game") { c.newTwoPlayerGame() })
-                else -> emptyList()
-            }
-            Header(st, c, extra + menu)
+            Header(st, c, menu)
             MoveStrip(st, c)
             Box(Modifier.weight(1f).fillMaxWidth()) {
                 val hint = st.currentHint
@@ -165,9 +202,11 @@ fun UnifiedChessWorkspace(
                 altArrow = inspectNode?.move,
                 badge = badgeNode?.let { n -> n.moveQualityBadge?.let { q -> n.move.to to q } },
                 onTap = c::onSquareTap,
-                rotateBlackPieces = st.tabletop,
+                whiteRotation = st.whitePieceRotation,
+                blackRotation = st.blackPieceRotation,
             )
             ActionBar(st, c)
+            GameActionBar(actions)
             ModeBar(st, c)
         }
 
@@ -181,6 +220,12 @@ fun UnifiedChessWorkspace(
     }
 
     if (st.showSummary) SummaryDialog(st, c)
+    if (confirmResign) AlertDialog(
+        onDismissRequest = { confirmResign = false },
+        title = { Text(if (st.mode == SessionMode.PLAY_AI) "Resign this game?" else "${st.position.sideToMove.label} resigns?") },
+        confirmButton = { Button(onClick = { confirmResign = false; c.resign() }) { Text("Resign") } },
+        dismissButton = { TextButton(onClick = { confirmResign = false }) { Text("Cancel") } },
+    )
     if (showNewGame) NewGameDialog(st.elo, onDismiss = { showNewGame = false }) { side, elo -> showNewGame = false; c.newGame(side, elo) }
     st.pendingPromotion?.let { PromotionDialog(st.position.sideToMove, c::choosePromotion) }
     st.error?.let { err -> AlertDialog(onDismissRequest = c::clearError, confirmButton = { TextButton(onClick = c::clearError) { Text("OK") } }, text = { Text(err) }) }
@@ -217,15 +262,28 @@ private fun Header(st: WorkspaceState, c: WorkspaceController, menu: List<Header
     Row(Modifier.fillMaxWidth().height(HeaderH).padding(start = 12.dp), verticalAlignment = Alignment.CenterVertically) {
         Text(st.title, style = MaterialTheme.typography.titleMedium, maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.weight(1f))
         if (st.mode == SessionMode.TWO_PLAYER) {
-            // Pill shows the board orientation; tapping cycles Tabletop → Pass & Play → Fixed.
-            Surface(
-                onClick = c::rotateButton, shape = RoundedCornerShape(50),
-                color = if (st.twoPlayerView != TwoPlayerView.FIXED) MaterialTheme.colorScheme.primaryContainer else MaterialTheme.colorScheme.surfaceVariant,
-                modifier = Modifier.padding(end = 6.dp).height(32.dp),
-            ) {
-                Row(Modifier.padding(horizontal = 10.dp), verticalAlignment = Alignment.CenterVertically) {
-                    Icon(Icons.Filled.ScreenRotation, null, Modifier.size(16.dp))
-                    Text(" " + st.twoPlayerView.label, style = MaterialTheme.typography.labelMedium, maxLines = 1)
+            // Mode selector pill: shows the current seating mode, opens the list of all three.
+            var pick by remember { mutableStateOf(false) }
+            Box {
+                Surface(
+                    onClick = { pick = true }, shape = RoundedCornerShape(50),
+                    color = MaterialTheme.colorScheme.primaryContainer,
+                    modifier = Modifier.padding(end = 6.dp).height(32.dp),
+                ) {
+                    Row(Modifier.padding(horizontal = 10.dp), verticalAlignment = Alignment.CenterVertically) {
+                        Icon(Icons.Filled.ScreenRotation, null, Modifier.size(16.dp))
+                        Text(" " + st.twoPlayerView.short, style = MaterialTheme.typography.labelMedium, maxLines = 1)
+                        Icon(Icons.Filled.ArrowDropDown, null, Modifier.size(16.dp))
+                    }
+                }
+                DropdownMenu(expanded = pick, onDismissRequest = { pick = false }) {
+                    TwoPlayerView.entries.forEach { v ->
+                        DropdownMenuItem(
+                            text = { Text(v.label, fontWeight = if (v == st.twoPlayerView) FontWeight.Bold else FontWeight.Normal) },
+                            leadingIcon = { if (v == st.twoPlayerView) Icon(Icons.Filled.Check, null) },
+                            onClick = { pick = false; c.setTwoPlayerView(v) },
+                        )
+                    }
                 }
             }
         } else {
@@ -300,6 +358,26 @@ private fun ActionBar(st: WorkspaceState, c: WorkspaceController) {
         NavButton(Icons.Filled.ChevronRight, "Next", t.canForward, c::forward)
         NavButton(Icons.Filled.LastPage, "Latest", t.canForward, c::toEnd)
         NavButton(Icons.Filled.SwapVert, "Flip board", true, c::flip)
+    }
+}
+
+@Composable
+private fun GameActionBar(actions: List<BarAction>) {
+    Row(
+        Modifier.fillMaxWidth().height(GameBarH).padding(horizontal = 4.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        actions.forEach { a ->
+            Column(
+                Modifier.weight(1f).padding(horizontal = 2.dp).clip(RoundedCornerShape(10.dp))
+                    .clickable(enabled = a.enabled, onClick = a.onClick)
+                    .alpha(if (a.enabled) 1f else 0.38f).padding(vertical = 4.dp),
+                horizontalAlignment = Alignment.CenterHorizontally,
+            ) {
+                Icon(a.icon, null, Modifier.size(22.dp))
+                Text(a.label, style = MaterialTheme.typography.labelSmall, maxLines = 1)
+            }
+        }
     }
 }
 

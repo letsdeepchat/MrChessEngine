@@ -1,0 +1,2 @@
+eco.tsv: opening names and move sequences from lichess-org/chess-openings
+(https://github.com/lichess-org/chess-openings), released under CC0 1.0 (public domain).

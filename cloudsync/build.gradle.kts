@@ -28,5 +28,7 @@ dependencies {
     implementation(libs.credentials)
     implementation(libs.credentials.play)
     implementation(libs.googleid)
+    implementation(libs.play.services.auth)
+    implementation(libs.androidx.activity.compose)
     implementation(libs.kotlinx.coroutines.play.services)
 }

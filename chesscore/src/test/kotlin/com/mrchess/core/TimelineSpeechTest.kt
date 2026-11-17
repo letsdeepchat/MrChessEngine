@@ -1,6 +1,7 @@
 package com.mrchess.core
 
 import com.mrchess.core.engine.Score
+import com.mrchess.core.review.GameSummary
 import com.mrchess.core.review.MoveQuality
 import com.mrchess.core.review.MoveQualityClassifier
 import com.mrchess.core.rules.GameTimeline
@@ -51,21 +52,46 @@ class TimelineSpeechTest {
     }
 
     @Test fun classifierThresholds() {
-        fun q(best: Int, played: Int, second: Int? = null, isBest: Boolean = false, sac: Boolean = false, routine: Boolean = false) =
-            MoveQualityClassifier.classify(MoveQualityClassifier.Inputs(Score(best), second?.let { Score(it) }, Score(played), isBest, sac, false, routine))
+        fun q(best: Int, played: Int, second: Int? = null, isBest: Boolean = false, sac: Boolean = false, routine: Boolean = false, book: Boolean = false) =
+            MoveQualityClassifier.classify(MoveQualityClassifier.Inputs(Score(best), second?.let { Score(it) }, Score(played), isBest, sac, false, routine, book))
         assertEquals(MoveQuality.BEST, q(50, 50, isBest = true))
-        assertEquals(MoveQuality.BEST, q(50, 42))
-        assertEquals(MoveQuality.GOOD, q(50, 20))
-        assertEquals(MoveQuality.INACCURACY, q(50, -20))
-        assertEquals(MoveQuality.MISTAKE, q(50, -150))
-        assertEquals(MoveQuality.BLUNDER, q(50, -260))
-        assertEquals(MoveQuality.GREAT, q(80, 80, second = -60, isBest = true))
-        assertEquals(MoveQuality.BRILLIANT, q(80, 80, second = -150, isBest = true))
+        assertEquals(MoveQuality.BEST, q(50, 42))                 // 0.7 % win-probability loss
+        assertEquals(MoveQuality.GOOD, q(50, 20))                 // 2.8 %
+        assertEquals(MoveQuality.GOOD, q(50, -20))                // 6.4 %: no longer an inaccuracy
+        assertEquals(MoveQuality.INACCURACY, q(50, -80))          // 11.9 %, 130 cp
+        assertEquals(MoveQuality.MISTAKE, q(50, -200))            // 22.2 %, 250 cp
+        assertEquals(MoveQuality.BLUNDER, q(50, -400))            // 35.9 %, 450 cp
+        assertEquals(MoveQuality.INACCURACY, MoveQualityClassifier.classify(  // missed mate but still +6.5
+            MoveQualityClassifier.Inputs(Score(mate = 3), null, Score(650), false, false, false, false)))
+        assertEquals(MoveQuality.GREAT, q(80, 80, second = -60, isBest = true))   // 2nd best is 12.8 % worse
+        assertEquals(MoveQuality.BEST, q(80, 80, second = 40, isBest = true))
         assertEquals(MoveQuality.BEST, q(80, 80, second = -150, isBest = true, routine = true))
-        assertEquals(MoveQuality.GREAT, q(600, 600, second = 300, isBest = true)) // others still win: not brilliant
+        assertEquals(MoveQuality.GREAT, q(600, 600, second = 300, isBest = true))
         assertEquals(MoveQuality.BRILLIANT, q(250, 245, sac = true))
-        assertEquals(MoveQuality.BEST, q(50, 45, sac = true)) // sacrifice but no real advantage
+        assertEquals(MoveQuality.BRILLIANT, q(50, 45, sac = true))  // sound sacrifice, position still balanced
+        assertEquals(MoveQuality.BEST, q(-100, -110, sac = true))   // win% after below 45: not brilliant
+        assertEquals(MoveQuality.BOOK, q(30, 10, book = true))
+        assertEquals(MoveQuality.MISTAKE, q(30, -200, book = true)) // an opening trap is still a mistake
         assertEquals(MoveQuality.BLUNDER, MoveQualityClassifier.classify(
             MoveQualityClassifier.Inputs(Score(30), null, Score(mate = -4), false, false, false, false)))
     }
+
+    @Test fun openingBook() {
+        val g = com.mrchess.core.rules.Pgn.parse("1. e4 e5 2. Nf3 Nc6 3. Bb5 a6")
+        val t = GameTimeline.fromGame(g)
+        assertTrue(com.mrchess.core.review.OpeningBook.size > 3000)
+        val o = com.mrchess.core.review.OpeningBook.lookup(t.positionAt(5))
+        assertTrue(o?.name?.contains("Ruy Lopez") == true)
+        assertTrue(o!!.eco.startsWith("C6"))
+        assertTrue(com.mrchess.core.review.OpeningBook.inBook(t.positionAt(0)))
+        // Transposition: 1. Nf3 Nc6 2. e4 e5 reaches the same position as 1. e4 e5 2. Nf3 Nc6.
+        val tr = GameTimeline.fromGame(com.mrchess.core.rules.Pgn.parse("1. Nf3 Nc6 2. e4 e5"))
+        assertEquals(com.mrchess.core.review.OpeningBook.lookup(t.positionAt(4)), com.mrchess.core.review.OpeningBook.lookup(tr.positionAt(4)))
+        val gs = GameSummary.of(listOf(com.mrchess.core.rules.Side.WHITE to bookAnnotation()))
+        assertEquals(100.0, gs.accuracyWhite!!, 0.001)
+    }
+
+    private fun bookAnnotation() = com.mrchess.core.review.MoveAnnotation(
+        MoveQuality.BOOK, 20, Score(30), Score(10), 1.8, null, null, null, null, "e4 is a book move", "King's Pawn Game",
+    )
 }

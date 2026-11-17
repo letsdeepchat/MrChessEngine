@@ -1,5 +1,7 @@
 package com.mrchess.app.ui
 
+import androidx.compose.animation.core.animateFloatAsState
+import androidx.compose.animation.core.tween
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
@@ -15,6 +17,7 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.getValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.geometry.Offset
@@ -58,14 +61,20 @@ fun ChessBoard(
     /** Move-quality badge drawn at the top-right corner of a square (usually the last move's destination). */
     badge: Pair<Int, MoveQuality>? = null,
     onTap: ((Int) -> Unit)? = null,
-    /** Tabletop two-player: draw Black's pieces rotated 180° so the opposite player sees them upright. */
-    rotateBlackPieces: Boolean = false,
+    /**
+     * Two Player across a table: rotation of White's / Black's piece icons in degrees (the board
+     * grid itself never turns). Changes animate, so the pieces visibly turn to face the next player.
+     */
+    whiteRotation: Float = 0f,
+    blackRotation: Float = 0f,
     theme: BoardTheme = LocalBoardTheme.current,
 ) {
     val Light = theme.light
     val Dark = theme.dark
     val LastMoveTint = theme.lastMove
     val SelectedTint = theme.selected
+    val whiteRot by animateFloatAsState(whiteRotation, tween(350, delayMillis = 120), label = "whiteRot")
+    val blackRot by animateFloatAsState(blackRotation, tween(350, delayMillis = 120), label = "blackRot")
     BoxWithConstraints(modifier.fillMaxWidth().aspectRatio(1f)) {
         val cell = maxWidth / 8
         val glyphSize = with(LocalDensity.current) { (cell * 0.82f).toSp() }
@@ -90,7 +99,8 @@ fun ChessBoard(
                             position[sq]?.let { p ->
                                 val fill = if (p.side == Side.WHITE) Color.White else Color(0xFF202020)
                                 val outline = if (p.side == Side.WHITE) Color(0xFF202020) else Color(0xFF9E9E9E)
-                                val turn = if (rotateBlackPieces && p.side == Side.BLACK) Modifier.graphicsLayer { rotationZ = 180f } else Modifier
+                                val rot = if (p.side == Side.WHITE) whiteRot else blackRot
+                                val turn = if (rot != 0f) Modifier.graphicsLayer { rotationZ = rot } else Modifier
                                 Text(
                                     p.glyph.toString() + "\uFE0E", // text (not emoji) presentation
                                     turn, style = TextStyle(fontSize = glyphSize, color = outline, drawStyle = Stroke(width = 4f)),
