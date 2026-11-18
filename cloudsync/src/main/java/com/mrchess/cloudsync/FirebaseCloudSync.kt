@@ -26,7 +26,8 @@ import kotlinx.coroutines.tasks.await
 class FirebaseCloudSync(context: Context, private val webClientId: String) : CloudSync {
     private val appContext = context.applicationContext
     private val auth = FirebaseAuth.getInstance()
-    private val db = FirebaseFirestore.getInstance()
+    // Firestore starts only when the first backup runs, not at app start-up.
+    private val db by lazy { FirebaseFirestore.getInstance() }
     private val _account = MutableStateFlow(auth.currentUser?.email)
     private val _name = MutableStateFlow(auth.currentUser?.displayName)
 
@@ -58,7 +59,14 @@ class FirebaseCloudSync(context: Context, private val webClientId: String) : Clo
         } catch (e: FirebaseAuthException) {
             if (e.errorCode == "ERROR_OPERATION_NOT_ALLOWED")
                 throw IllegalStateException("E-mail sign-in is switched off for this app. In the Firebase console enable Authentication → Sign-in method → Email/Password.", e)
-            throw IllegalStateException("E-mail sign-in failed: ${e.message}", e)
+            throw IllegalStateException(CloudErrors.friendly(e) ?: "E-mail sign-in failed: ${e.message}", e)
+        } catch (e: kotlinx.coroutines.CancellationException) {
+            throw e
+        } catch (e: IllegalStateException) {
+            throw e
+        } catch (e: Exception) {
+            // e.g. FirebaseException "[ CONFIGURATION_NOT_FOUND ]" when Authentication was never started.
+            throw IllegalStateException(CloudErrors.friendly(e) ?: "E-mail sign-in failed: ${e.message}", e)
         } ?: error("Sign-in returned no user")
         _name.value = user.displayName ?: user.email?.substringBefore('@')
         _account.value = user.email ?: user.uid
@@ -67,7 +75,13 @@ class FirebaseCloudSync(context: Context, private val webClientId: String) : Clo
 
     override suspend fun sendPasswordReset(email: String): Result<Unit> = runCatching {
         require(email.contains('@')) { "Enter your e-mail address first." }
-        auth.sendPasswordResetEmail(email).await()
+        try {
+            auth.sendPasswordResetEmail(email).await()
+        } catch (e: kotlinx.coroutines.CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            throw IllegalStateException(CloudErrors.friendly(e) ?: "Could not send the reset e-mail: ${e.message}", e)
+        }
         Unit
     }
 
@@ -80,7 +94,15 @@ class FirebaseCloudSync(context: Context, private val webClientId: String) : Clo
 
     private fun games() = db.collection("users").document(auth.currentUser?.uid ?: error("Not signed in")).collection("games")
 
-    override suspend fun push(records: List<CloudGameRecord>) {
+    private suspend fun <T> friendly(block: suspend () -> T): T = try {
+        block()
+    } catch (e: kotlinx.coroutines.CancellationException) {
+        throw e
+    } catch (e: Exception) {
+        throw IllegalStateException(CloudErrors.friendly(e) ?: (e.message ?: "Cloud error"), e)
+    }
+
+    override suspend fun push(records: List<CloudGameRecord>) = friendly {
         // Firestore batches are limited to 500 writes.
         records.chunked(400).forEach { chunk ->
             val batch = db.batch()
@@ -89,7 +111,9 @@ class FirebaseCloudSync(context: Context, private val webClientId: String) : Clo
         }
     }
 
-    override suspend fun pull(): List<CloudGameRecord> =
+    override suspend fun pull(): List<CloudGameRecord> = friendly { pullRaw() }
+
+    private suspend fun pullRaw(): List<CloudGameRecord> =
         games().get().await().documents.mapNotNull { d ->
             runCatching {
                 CloudGameRecord(

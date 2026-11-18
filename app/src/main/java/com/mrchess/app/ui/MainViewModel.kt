@@ -7,6 +7,7 @@ import androidx.lifecycle.viewModelScope
 import com.mrchess.app.MrChessApp
 import android.app.Activity
 import com.mrchess.app.audio.SoundPack
+import com.mrchess.app.data.Connectivity
 import com.mrchess.app.data.GameRecordEntity
 import com.mrchess.app.vision.ImageToFen
 import com.mrchess.app.vision.Recognition
@@ -98,7 +99,7 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         }
         viewModelScope.launch {
             history.migrateLegacyPgnFiles()
-            history.sync()
+            history.requestSync() // background, and skipped while offline
         }
         viewModelScope.launch { soundPack.collect { sounds.pack = it } }
     }
@@ -144,6 +145,7 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         authenticate { history.cloud.signInWithEmail(email.trim(), password, create) }
 
     fun resetPassword(email: String) {
+        if (!Connectivity.isOnline(ctx)) { _message.value = Connectivity.OFFLINE_MESSAGE; return }
         viewModelScope.launch {
             history.cloud.sendPasswordReset(email.trim())
                 .onSuccess { _message.value = "Password reset e-mail sent to ${email.trim()}." }
@@ -153,6 +155,7 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
 
     private fun authenticate(block: suspend () -> Result<String>) {
         if (_authBusy.value) return
+        if (!Connectivity.isOnline(ctx)) { _message.value = Connectivity.OFFLINE_MESSAGE; return }
         viewModelScope.launch {
             _authBusy.value = true
             try {
@@ -160,9 +163,12 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
                     .onSuccess { email ->
                         _showAuth.value = false
                         _message.value = "Signed in as $email. Merging your games with the cloud…"
-                        history.sync()
-                            .onSuccess { _message.value = "Signed in as $email. Your game history is backed up and synced." }
-                            .onFailure { e -> _message.value = "Signed in as $email, but sync failed: ${e.message}" }
+                        // Sync in the background; the sign-in screen closes at once.
+                        viewModelScope.launch {
+                            history.sync()
+                                .onSuccess { _message.value = "Signed in as $email. Your game history is backed up and synced." }
+                                .onFailure { e -> _message.value = "Signed in as $email, but backup failed: ${e.message}" }
+                        }
                     }
                     .onFailure { e -> if (e !is kotlinx.coroutines.CancellationException) _message.value = e.message ?: "Sign-in failed" }
             } finally {
@@ -196,7 +202,9 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
 
     fun syncNow() {
         viewModelScope.launch {
-            history.sync().onFailure { e -> _message.value = "Sync failed (offline?): ${e.message}" }
+            history.sync()
+                .onSuccess { if (history.cloud.account.value != null) _message.value = "Games backed up and synced." }
+                .onFailure { e -> _message.value = "Sync failed: ${e.message}" }
         }
     }
 

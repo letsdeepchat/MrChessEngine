@@ -52,12 +52,15 @@ data class PuzzleSession(
     enum class State { SETUP, YOUR_TURN, OPPONENT_TURN, SOLVED, FAILED }
     enum class Outcome { CORRECT, SOLVED, WRONG, IGNORED }
 
-    val position: Position get() = positionAt(ply)
-    val lastMove: Move? get() = if (ply == 0) null else Move.fromUci(puzzle.moves[ply - 1])
+    /** Parsed once per session instance (the UI reads it on every frame; legal moves stay cached). */
+    val position: Position by lazy(LazyThreadSafetyMode.PUBLICATION) { replay(ply) }
+    val lastMove: Move? by lazy(LazyThreadSafetyMode.PUBLICATION) { if (ply == 0) null else Move.fromUci(puzzle.moves[ply - 1]) }
     val expected: Move? get() = puzzle.moves.getOrNull(ply)?.let(Move::fromUci)
     val finished: Boolean get() = state == State.SOLVED || state == State.FAILED
 
-    fun positionAt(n: Int): Position {
+    fun positionAt(n: Int): Position = if (n == ply) position else replay(n)
+
+    private fun replay(n: Int): Position {
         var p = Position.fromFen(puzzle.fen)
         for (i in 0 until n) p = p.play(Move.fromUci(puzzle.moves[i]), validate = false)
         return p

@@ -28,6 +28,8 @@ recogniser all run on the device.
 | **GM puzzles** | 451 puzzles rated 2500–2988 from the Lichess puzzle database (CC0), all checked to be solvable by the unit tests. The next puzzle is the unplayed one closest to your estimated Elo (starts at 1500, K = 64 for the first 10 puzzles, then 40, then 24). Only the first try at each puzzle counts; a hint or the solution counts as a miss. Fully offline. |
 | **Review history** | Finished and reviewed games are stored in a local Room database with accuracy and badges, and stay until you delete them or clear the app's storage. |
 | **Welcome screen and cloud backup** | First launch shows Continue with Google, Continue with Email and Play as Guest. Guests get every feature; signing in only backs up review history to Firestore (`users/{uid}/games`). Sign in later from ⋮ or the Review tab. Google sign-in (`GoogleAuthHelper`) tries Credential Manager, then the Play services account picker, then Firebase's hosted Google page in a Custom Tab. All three need the APK's SHA-1 (and SHA-256 for the browser route) in Firebase; e-mail sign-in needs the Email/Password provider enabled. |
+| **Performance** | The board is one canvas: squares, pieces (glyph layouts measured once per size), highlights and arrows are drawn in a single pass, and piece turning and the 160 ms move slide only redraw it. Tap-tap or drag-to-move, with selection on touch-down. Engine, coach, move-quality and opening-book work runs on background threads; the game result, position and summary are cached per timeline instead of replaying the game on every frame. Stockfish's threads and 64 MB hash are set once (not on every switch between bot and coach), and both the engine and the opening book warm up at launch. Bots answer in 0.15–1 s depending on strength. |
+| **Offline first** | No ads, trackers or analytics. Nothing waits for the network: games save to the phone at once, cloud backup runs in the background, is skipped offline and catches up when a connection returns. Sign-in reports exactly which Firebase setting is missing. |
 | **Elo 800 to 3200** | Stockfish `UCI_Elo` covers 1320–3190, `Skill Level` is used below that, and the far right of the slider plays at full strength. New Game has *Set as default Elo level and colour* (stored as `default_bot_elo` / `default_bot_color`), which the app starts with next time. |
 
 ### How explanations work (`chesscore/.../explain/MoveExplainer.kt`)
@@ -102,8 +104,10 @@ blunder with its refutation.
    (Project settings → Your apps → Add fingerprint):
    SHA-1 `D4:36:F4:E5:35:57:2E:7C:80:B3:D3:02:3A:32:A1:CD:55:A6:82:0D`
    SHA-256 `A3:C0:89:B8:57:A2:3E:13:DF:15:19:9E:52:62:85:D7:CE:AB:62:B2:0D:D3:F4:2F:53:C5:68:DE:10:84:15:12`
-3. Under **Authentication → Sign-in method**, enable **Google** and **Email/Password**.
-4. Create a **Firestore** database with these rules:
+3. Open **Authentication** and press **Get started** (until you do, Firebase answers every sign-in
+   with `CONFIGURATION_NOT_FOUND`). Then under **Sign-in method** enable **Email/Password** and
+   **Google** (pick a support e-mail).
+4. Open **Firestore Database → Create database**, then publish these rules:
    ```
    rules_version = '2';
    service cloud.firestore { match /databases/{db}/documents {

@@ -96,10 +96,20 @@ class UciEngine(
         send("setoption name $name value $value")
     }
 
-    /** Applies a strength preset. Must not be called during a search. */
+    private var appliedThreads = -1
+    private var appliedHash = -1
+    private var appliedMultiPv = -1
+
+    /**
+     * Applies a strength preset. Must not be called during a search.
+     *
+     * Threads and Hash are only sent when they change: Stockfish re-creates its search threads and
+     * re-allocates (and clears) the whole hash table on every such setoption, which used to cost
+     * a noticeable pause on each switch between the opponent and the coach.
+     */
     suspend fun configure(strength: EngineStrength, threads: Int = 2, hashMb: Int = 64) = searchMutex.withLock {
-        setOption("Threads", threads)
-        setOption("Hash", hashMb)
+        if (threads != appliedThreads) { setOption("Threads", threads); appliedThreads = threads }
+        if (hashMb != appliedHash) { setOption("Hash", hashMb); appliedHash = hashMb }
         if (strength.limitElo != null) {
             setOption("Skill Level", 20)
             setOption("UCI_LimitStrength", true)
@@ -128,7 +138,7 @@ class UciEngine(
     ): SearchResult = searchMutex.withLock {
         withContext(Dispatchers.IO) {
             drain()
-            setOption("MultiPV", multiPv)
+            if (multiPv != appliedMultiPv) { setOption("MultiPV", multiPv); appliedMultiPv = multiPv }
             send(if (moves.isEmpty()) "position fen $fen" else "position fen $fen moves ${moves.joinToString(" ")}")
             send("go ${limit.toUci()}")
             val lastByPv = sortedMapOf<Int, SearchInfo>()

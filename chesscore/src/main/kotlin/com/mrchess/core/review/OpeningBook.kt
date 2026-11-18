@@ -1,11 +1,12 @@
 package com.mrchess.core.review
 
+import com.mrchess.core.rules.Move
 import com.mrchess.core.rules.Position
 
 /**
  * Built-in opening book: every position reached in the first [MAX_PLY] plies of ~3,800 named
  * ECO lines (lichess-org/chess-openings, CC0). Lookups are by position, so transpositions count.
- * Loaded lazily on first use (a few hundred milliseconds on a phone).
+ * Loaded lazily on first use; the app warms it up in the background at start-up.
  */
 object OpeningBook {
     const val MAX_PLY = 16
@@ -17,7 +18,7 @@ object OpeningBook {
     private val byKey: Map<String, Opening> by lazy { load() }
 
     /** Board, side to move, castling and en passant: the FEN without the move counters. */
-    fun key(p: Position): String = p.toFen().split(' ').take(4).joinToString(" ")
+    fun key(p: Position): String = p.repetitionKey
 
     fun isStart(p: Position) = key(p) == startKey
 
@@ -38,19 +39,21 @@ object OpeningBook {
             rows.drop(1).forEach { row ->
                 val parts = row.split('\t')
                 if (parts.size < 3) return@forEach
-                val sans = parts[2].split(' ').filter { it.isNotBlank() && !it.first().isDigit() }
+                // Moves are stored in UCI (converted from the source PGN at build time), so loading
+                // needs no SAN parsing or legality checks: a few hundred ms became a few dozen.
+                val ucis = parts[2].split(' ').filter { it.isNotBlank() }
                 var pos = Position.fromFen(Position.START_FEN)
                 val prefix = StringBuilder()
                 val keys = ArrayList<String>(MAX_PLY)
-                for (san in sans.take(MAX_PLY)) {
-                    prefix.append(san).append(' ')
+                for (uci in ucis.take(MAX_PLY)) {
+                    prefix.append(uci).append(' ')
                     val cur = pos
                     pos = prefixes.getOrPut(prefix.toString()) {
-                        runCatching { cur.play(cur.parseSan(san)) }.getOrNull() ?: return@forEach
+                        runCatching { cur.play(Move.fromUci(uci), validate = false) }.getOrNull() ?: return@forEach
                     }
                     keys += key(pos)
                 }
-                lines += Line(parts[0], parts[1], keys, sans.size <= MAX_PLY)
+                lines += Line(parts[0], parts[1], keys, ucis.size <= MAX_PLY)
             }
         }
         // Pass 2: positions where a named line ends keep that name.

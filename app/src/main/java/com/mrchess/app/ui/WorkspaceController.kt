@@ -25,6 +25,7 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 
 enum class SessionMode { PLAY_AI, TWO_PLAYER, IMPORT_ANALYSIS, POST_GAME_REVIEW }
 
@@ -68,7 +69,11 @@ data class WorkspaceState(
     val error: String? = null,
     val title: String = "",
 ) {
+    // Position, result and summary are cached on the timeline instance, so reading them on every
+    // recomposition is free once computed.
     val position: Position get() = timeline.position
+    /** FEN of the current position, exactly as stored (no re-serialisation). */
+    val fen: String get() = timeline.fenAt(timeline.currentPly)
     /** Turn the board 180° after every move so the side to move is at the bottom. */
     val autoFlip: Boolean get() = mode == SessionMode.TWO_PLAYER && twoPlayerView == TwoPlayerView.SOLO_FLIP
     /** Players sit on opposite sides of the phone (the board grid never turns). */
@@ -89,11 +94,11 @@ data class WorkspaceState(
     /** Board orientation a 2 Player game should have right now. */
     fun twoPlayerFlipped(): Boolean =
         if (twoPlayerView == TwoPlayerView.SOLO_FLIP) position.sideToMove == Side.BLACK else player1Side == Side.BLACK
-    val result: GameResult get() = timeline.resultAtCurrent()
+    val result: GameResult get() = timeline.result
     val gameOver: Boolean get() = result != GameResult.ONGOING
-    val currentHint: Explanation? get() = hint?.takeIf { hintFen == position.toFen() }
+    val currentHint: Explanation? get() = hint?.takeIf { hintFen == fen }
     val inspecting: Boolean get() = insightIndex != null && insightIndex == timeline.currentPly && insightIndex < timeline.nodes.size
-    val summary: GameSummary get() = GameSummary.of(timeline.nodes.map { it.mover to it.annotation })
+    val summary: GameSummary get() = timeline.summary
     val engineToMove: Boolean
         get() = mode == SessionMode.PLAY_AI && !analysisMode && position.sideToMove != userSide
     val canMovePieces: Boolean get() = !engineThinking && !gameOver && !engineToMove
@@ -324,7 +329,7 @@ class WorkspaceController(
 
     private fun onGameOver() {
         val st = s
-        val reason = st.timeline.toGame(st.timeline.currentPly).resultReason ?: st.timeline.tags["Termination"] ?: ""
+        val reason = st.timeline.resultReasonAtCurrent() ?: st.timeline.tags["Termination"] ?: ""
         _state.update { it.copy(status = "Game over: ${st.result.pgn} $reason".trim()) }
         summaryWhenDone = true
         if ((st.mode == SessionMode.PLAY_AI || st.mode == SessionMode.TWO_PLAYER) && st.timeline.nodes.size >= 2) saveHistory()
@@ -362,12 +367,14 @@ class WorkspaceController(
         if (st.engineToMove && st.timeline.atEnd && !st.gameOver) {
             _state.update { it.copy(engineThinking = true) }
             val mv = try {
-                coach.opponentMove(st.position, EngineStrength.fromElo(st.elo))
+                withContext(Dispatchers.Default) { coach.opponentMove(st.position, EngineStrength.fromElo(st.elo)) }
             } finally {
                 _state.update { it.copy(engineThinking = false) }
             }
             if (mv != null && s.timeline === st.timeline) {
-                applyTimeline(s.timeline.play(mv), playSound = true)
+                val next = withContext(Dispatchers.Default) { st.timeline.play(mv).also { it.position.legalMoves(); it.result } }
+                if (s.timeline !== st.timeline) return
+                applyTimeline(next, playSound = true)
                 if (s.gameOver) onGameOver()
             }
         }
@@ -376,11 +383,13 @@ class WorkspaceController(
         val hintAllowed = !now.gameOver && !(now.engineToMove && now.timeline.atEnd)
         if (hintAllowed && (hintRequested || now.liveCoach) && now.currentHint == null && !now.inspecting) {
             _state.update { it.copy(hintLoading = true) }
-            val fen = now.position.toFen()
-            val limit = if (now.analysisMode || now.mode != SessionMode.PLAY_AI) SearchLimit.MoveTime(2500) else SearchLimit.MoveTime(1500)
-            val e = try { coach.hint(now.position, limit) } finally { _state.update { it.copy(hintLoading = false) } }
+            val fen = now.fen
+            val limit = if (now.analysisMode || now.mode != SessionMode.PLAY_AI) SearchLimit.MoveTime(1800) else SearchLimit.MoveTime(1200)
+            val e = try {
+                withContext(Dispatchers.Default) { coach.hint(now.position, limit) }
+            } finally { _state.update { it.copy(hintLoading = false) } }
             hintRequested = false
-            if (s.position.toFen() == fen) _state.update { it.copy(hint = e, hintFen = fen) }
+            if (s.fen == fen) _state.update { it.copy(hint = e, hintFen = fen) }
         }
         // 3. Move-quality badges: the move just played first, then the rest of the game in order.
         val ann = annotator ?: TimelineAnnotator(coach, SearchLimit.Depth(annotationDepth)).also { annotator = it }
@@ -395,7 +404,8 @@ class WorkspaceController(
                 for (i in order) {
                     val node = s.timeline.nodes.getOrNull(i) ?: break
                     if (node.annotation != null) continue
-                    val a = ann.annotate(s.timeline, i)
+                    val t = s.timeline
+                    val a = withContext(Dispatchers.Default) { ann.annotate(t, i) }
                     _state.update { cur ->
                         if (cur.timeline.nodes.getOrNull(i)?.uci == node.uci) cur.copy(timeline = cur.timeline.annotate(i, a)) else cur
                     }
