@@ -6,9 +6,15 @@ import com.mrchess.core.rules.GameTimeline
 import com.mrchess.core.rules.Pgn
 import com.mrchess.core.sync.CloudGameRecord
 import com.mrchess.core.sync.CloudSync
+import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
+import kotlinx.coroutines.withTimeout
 import org.json.JSONArray
 import java.io.File
 import java.util.UUID
@@ -16,9 +22,19 @@ import java.util.UUID
 /**
  * Offline-first review history. Room is the source of truth; when a cloud account is signed
  * in, new or changed games are pushed and remote games are merged back (deduplicated by id).
+ *
+ * Saving never waits for the network: the cloud push runs in the background, is skipped while
+ * offline, and catches up when a connection comes back. (Firestore only completes a write once
+ * the server confirms it, so awaiting it offline used to hang the save.)
  */
 class ReviewRepository(private val context: Context, val cloud: CloudSync) {
-    private val dao = ReviewDatabase.get(context).games()
+    private val dao by lazy { ReviewDatabase.get(context).games() }
+    private val background = CoroutineScope(SupervisorJob() + Dispatchers.IO)
+    private val syncLock = Mutex()
+
+    init {
+        if (cloud.available) Connectivity.onOnline(context) { requestSync() }
+    }
 
     val games: Flow<List<GameRecordEntity>> = dao.observeAll()
 
@@ -50,7 +66,7 @@ class ReviewRepository(private val context: Context, val cloud: CloudSync) {
             isSynced = false,
         )
         dao.upsert(e)
-        syncQuietly()
+        requestSync()
         recId
     }
 
@@ -60,31 +76,47 @@ class ReviewRepository(private val context: Context, val cloud: CloudSync) {
 
     suspend fun delete(id: String, alsoCloud: Boolean = true) = withContext(Dispatchers.IO) {
         dao.delete(id)
-        if (alsoCloud && cloud.account.value != null) runCatching { cloud.delete(id) }
+        if (alsoCloud && cloudReady()) background.launch { runCatching { withTimeout(CLOUD_TIMEOUT_MS) { cloud.delete(id) } } }
     }
 
     /** "Clear History": local only, or local and cloud. */
     suspend fun clear(alsoCloud: Boolean) = withContext(Dispatchers.IO) {
         dao.clear()
-        if (alsoCloud && cloud.account.value != null) runCatching { cloud.deleteAll() }
+        if (alsoCloud && cloudReady()) background.launch { runCatching { withTimeout(CLOUD_TIMEOUT_MS) { cloud.deleteAll() } } }
     }
 
-    /** Push unsynced games and merge remote ones. No-op when signed out or offline. */
+    private fun cloudReady() = cloud.available && cloud.account.value != null && Connectivity.isOnline(context)
+
+    /** Starts a background sync if signed in and online; returns at once. */
+    fun requestSync() {
+        if (!cloudReady()) return
+        background.launch { runCatching { sync() } }
+    }
+
+    /**
+     * Push unsynced games and merge remote ones. Succeeds at once when signed out; fails fast
+     * (without touching the network) when offline, and gives up after [CLOUD_TIMEOUT_MS].
+     */
     suspend fun sync(): Result<Unit> = withContext(Dispatchers.IO) {
         if (!cloud.available || cloud.account.value == null) return@withContext Result.success(Unit)
-        runCatching {
-            val local = dao.unsynced()
-            if (local.isNotEmpty()) {
-                cloud.push(local.map { it.toCloud() })
-                dao.markSynced(local.map { it.id })
+        if (!Connectivity.isOnline(context)) return@withContext Result.failure(IllegalStateException(Connectivity.OFFLINE_MESSAGE))
+        syncLock.withLock {
+            runCatching {
+                withTimeout(CLOUD_TIMEOUT_MS) {
+                    val local = dao.unsynced()
+                    if (local.isNotEmpty()) {
+                        cloud.push(local.map { it.toCloud() })
+                        dao.markSynced(local.map { it.id })
+                    }
+                    val remote = cloud.pull()
+                    val merged = remote.filter { r -> dao.get(r.id)?.let { it.timestamp < r.timestamp || it.isSynced } ?: true }
+                    if (merged.isNotEmpty()) dao.upsertAll(merged.map { it.toEntity() })
+                }
+            }.recoverCatching { e ->
+                throw if (e is kotlinx.coroutines.TimeoutCancellationException) IllegalStateException("The cloud did not answer in time. Your games are safe on this phone and will sync later.", e) else e
             }
-            val remote = cloud.pull()
-            val merged = remote.filter { r -> dao.get(r.id)?.let { it.timestamp < r.timestamp || it.isSynced } ?: true }
-            if (merged.isNotEmpty()) dao.upsertAll(merged.map { it.toEntity() })
         }
     }
-
-    private suspend fun syncQuietly() { runCatching { sync() } }
 
     /** One-time import of games saved as PGN files by earlier versions. */
     suspend fun migrateLegacyPgnFiles() = withContext(Dispatchers.IO) {
@@ -107,6 +139,8 @@ class ReviewRepository(private val context: Context, val cloud: CloudSync) {
     )
 
     companion object {
+        private const val CLOUD_TIMEOUT_MS = 25_000L
+
         /** Loads the Firebase implementation if this build includes it (see app/build.gradle.kts). */
         fun createCloudSync(context: Context): CloudSync = runCatching {
             if (!com.mrchess.app.BuildConfig.CLOUD_SYNC) return CloudSync.Disabled

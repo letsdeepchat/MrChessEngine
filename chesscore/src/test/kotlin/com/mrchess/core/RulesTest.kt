@@ -56,4 +56,29 @@ class RulesTest {
         assertTrue(Position.validate("8/8/8/8/8/8/8/K7 w - - 0 1").isNotEmpty())
         assertTrue(Position.validate(Position.START_FEN).isEmpty())
     }
+
+    /** The cached timeline result must match a full replay through Game at every ply. */
+    @Test fun cachedTimelineResultMatchesReplay() {
+        val games = listOf(
+            // Threefold repetition (knights shuffle).
+            "1. Nf3 Nf6 2. Ng1 Ng8 3. Nf3 Nf6 4. Ng1 Ng8 5. e4",
+            // Checkmate.
+            "1. e4 e5 2. Bc4 Nc6 3. Qh5 Nf6 4. Qxf7#",
+            // Resignation tag at the end only.
+            "[Result \"0-1\"]\n\n1. d4 d5 2. c4 e6 0-1",
+        )
+        for (pgn in games) {
+            val t = com.mrchess.core.rules.GameTimeline.fromGame(Pgn.parse(pgn))
+            for (ply in 0..t.lastPly) {
+                val at = t.goTo(ply)
+                val g = at.toGame(ply).also { if (!at.atEnd) it.tags.remove("Result") }
+                assertEquals("ply $ply of $pgn", g.result, at.result)
+                assertEquals("reason at ply $ply", g.resultReason, at.resultReasonAtCurrent())
+                assertEquals(at.positionAt(ply).toFen(), at.position.toFen())
+            }
+        }
+        val rep = com.mrchess.core.rules.GameTimeline.fromGame(Pgn.parse(games[0]))
+        assertEquals(com.mrchess.core.rules.GameResult.DRAW, rep.goTo(8).result)
+        assertEquals("Threefold repetition", rep.goTo(8).resultReasonAtCurrent())
+    }
 }

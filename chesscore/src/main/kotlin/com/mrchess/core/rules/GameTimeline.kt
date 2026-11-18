@@ -1,6 +1,7 @@
 package com.mrchess.core.rules
 
 import com.mrchess.core.engine.Score
+import com.mrchess.core.review.GameSummary
 import com.mrchess.core.review.MoveAnnotation
 import com.mrchess.core.review.MoveQuality
 
@@ -40,8 +41,17 @@ data class GameTimeline(
     val atEnd: Boolean get() = currentPly == nodes.size
 
     fun fenAt(ply: Int): String = if (ply == 0) startFen else nodes[ply - 1].fenAfterMove
-    fun positionAt(ply: Int): Position = Position.fromFen(fenAt(ply))
-    val position: Position get() = positionAt(currentPly)
+    fun positionAt(ply: Int): Position = if (ply == currentPly) position else Position.fromFen(fenAt(ply))
+
+    // Derived values are computed once per timeline instance. The UI reads them many times per
+    // frame, and the instance is shared by every UI state that has not changed the game itself.
+    /** The current position (parsed once; its legal moves are cached on the instance). */
+    val position: Position by lazy(LazyThreadSafetyMode.PUBLICATION) { Position.fromFen(fenAt(currentPly)) }
+    private val startPosition: Position by lazy(LazyThreadSafetyMode.PUBLICATION) { Position.fromFen(startFen) }
+    /** Result at the current ply (see [resultAtCurrent]). */
+    val result: GameResult by lazy(LazyThreadSafetyMode.PUBLICATION) { computeResult() }
+    /** Move-quality counts and accuracy of the annotated moves. */
+    val summary: GameSummary by lazy(LazyThreadSafetyMode.PUBLICATION) { GameSummary.of(nodes.map { it.mover to it.annotation }) }
 
     /** The move that led to the current position, if any. */
     val currentNode: MoveNode? get() = if (currentPly == 0) null else nodes[currentPly - 1]
@@ -78,15 +88,55 @@ data class GameTimeline(
         Game(startFen, nodes.take(upTo).map { it.move }, LinkedHashMap(tags))
 
     /** Result at the current ply (checkmate, stalemate, repetition, …) or the stored tag at the end. */
-    fun resultAtCurrent(): GameResult {
-        val g = toGame(currentPly)
-        if (!atEnd) g.tags.remove("Result")
-        return g.result
+    fun resultAtCurrent(): GameResult = result
+
+    /** Why the game ended at the current ply, or null (resignations come from the Termination tag). */
+    fun resultReasonAtCurrent(): String? {
+        val pos = position
+        return when {
+            pos.isCheckmate -> "Checkmate"
+            pos.isStalemate -> "Stalemate"
+            pos.isInsufficientMaterial -> "Insufficient material"
+            pos.halfmoveClock >= 100 -> "50-move rule"
+            threefoldUpTo(currentPly) -> "Threefold repetition"
+            else -> null
+        }
+    }
+
+    // Same rules as Game.result, without replaying (and re-validating) every move from the start.
+    private fun computeResult(): GameResult {
+        val pos = position
+        return when {
+            pos.isCheckmate -> if (pos.sideToMove == Side.WHITE) GameResult.BLACK_WINS else GameResult.WHITE_WINS
+            pos.isStalemate || pos.isInsufficientMaterial || pos.halfmoveClock >= 100 || threefoldUpTo(currentPly) -> GameResult.DRAW
+            atEnd -> tags["Result"]?.let { r -> GameResult.entries.firstOrNull { it.pgn == r } } ?: GameResult.ONGOING
+            else -> GameResult.ONGOING
+        }
+    }
+
+    /** Any position (board, side, castling, e.p.) seen three times in plies 0..[ply]. */
+    private fun threefoldUpTo(ply: Int): Boolean {
+        if (ply < 8) return false
+        val counts = HashMap<String, Int>()
+        counts[startPosition.repetitionKey] = 1
+        for (i in 0 until ply) {
+            val k = repetitionKey(nodes[i].fenAfterMove)
+            val n = (counts[k] ?: 0) + 1
+            if (n >= 3) return true
+            counts[k] = n
+        }
+        return false
+    }
+
+    private fun repetitionKey(fen: String): String {
+        var spaces = 0
+        for (i in fen.indices) if (fen[i] == ' ' && ++spaces == 4) return fen.substring(0, i)
+        return fen
     }
 
     /** "1. e4", "e5", "2. Nf3" … labels for the move strip. */
     fun moveLabel(index: Int): String {
-        val start = Position.fromFen(startFen)
+        val start = startPosition
         val offset = index + if (start.sideToMove == Side.WHITE) 0 else 1
         val no = start.fullmoveNumber + offset / 2
         val san = nodes[index].san

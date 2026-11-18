@@ -259,7 +259,13 @@ class Position private constructor(
     }
 
     /** Key for threefold repetition (FEN without move counters). */
-    val repetitionKey: String get() = toFen().split(' ').take(4).joinToString(" ")
+    val repetitionKey: String get() = toFen().let { f -> f.substring(0, nthSpace(f, 4)) }
+
+    private fun nthSpace(s: String, n: Int): Int {
+        var seen = 0
+        for (i in s.indices) if (s[i] == ' ' && ++seen == n) return i
+        return s.length
+    }
 
     // ---------------------------------------------------------------- FEN
 

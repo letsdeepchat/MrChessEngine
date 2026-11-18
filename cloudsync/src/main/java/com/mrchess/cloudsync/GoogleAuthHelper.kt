@@ -65,10 +65,14 @@ class GoogleAuthHelper(private val auth: FirebaseAuth, private val webClientId: 
         val user = if (idToken != null) {
             try {
                 auth.signInWithCredential(GoogleAuthProvider.getCredential(idToken, null)).await().user
+            } catch (e: kotlinx.coroutines.CancellationException) {
+                throw e
             } catch (e: Exception) {
                 throw SignInException(
-                    "Google accepted the account but Firebase refused it (${e.message}). " +
-                        "In the Firebase console, check that Authentication → Sign-in method → Google is enabled.", e,
+                    CloudErrors.friendly(e)?.let { "Google accepted your account, but Firebase refused it. $it" }
+                        ?: ("Google accepted the account but Firebase refused it (${e.message}). " +
+                            "In the Firebase console, check that Authentication → Sign-in method → Google is enabled."),
+                    e,
                 )
             }
         } else {
@@ -124,16 +128,18 @@ class GoogleAuthHelper(private val auth: FirebaseAuth, private val webClientId: 
 
     private fun explain(problems: List<String>): String {
         val all = problems.joinToString(" ")
+        // A project setting (Authentication not started, provider off, …) explains every route failing.
+        CloudErrors.friendly(IllegalStateException(all))?.let { return "$it\n\nDetails: ${problems.joinToString("; ")}" }
         val config = listOf("10", "12500", "28444", "28433", "developer", "No credentials", "SHA-1", "INVALID_CERT", "app_not_authorized", "not authorized")
             .any { all.contains(it, ignoreCase = true) }
         return buildString {
             if (all.contains("network", ignoreCase = true)) append("Sign-in needs an internet connection. ")
             if (config || !all.contains("network", ignoreCase = true)) {
-                append("Google refused this app's signing certificate. In the Firebase console open Project settings → Your apps → ")
-                append("com.mrchess.app → Add fingerprint, paste SHA-1 D4:36:F4:E5:35:57:2E:7C:80:B3:D3:02:3A:32:A1:CD:55:A6:82:0D, ")
-                append("and also the SHA-256 A3:C0:89:B8:57:A2:3E:13:DF:15:19:9E:52:62:85:D7:CE:AB:62:B2:0D:D3:F4:2F:53:C5:68:DE:10:84:15:12 ")
-                append("(the browser route checks it), save, wait about 5 minutes and try again. ")
-                append("Also check Authentication → Sign-in method → Google is enabled. ")
+                append("Google didn't accept this app's sign-in setup. In the Firebase console check three things: ")
+                append("1) Authentication → Sign-in method → Google is enabled with a support e-mail; ")
+                append("2) Project settings → Your apps → com.mrchess.app lists SHA-1 D4:36:F4:E5:35:57:2E:7C:80:B3:D3:02:3A:32:A1:CD:55:A6:82:0D ")
+                append("and SHA-256 A3:C0:89:B8:57:A2:3E:13:DF:15:19:9E:52:62:85:D7:CE:AB:62:B2:0D:D3:F4:2F:53:C5:68:DE:10:84:15:12; ")
+                append("3) the phone has a Google account added. Changes can take about 5 minutes to reach Google. ")
             }
             append("You can keep using every feature without signing in.")
             append("\n\nDetails: ").append(problems.joinToString("; "))
