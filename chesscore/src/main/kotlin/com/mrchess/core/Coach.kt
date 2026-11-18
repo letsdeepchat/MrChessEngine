@@ -81,6 +81,7 @@ class TimelineAnnotator(
         val after = t.positionAt(index + 1)
         return MoveQualityClassifier.annotate(
             before, t.nodes[index].move, analysis(before), analysis(after), t.nodes.getOrNull(index - 1)?.move,
+            t.nodes.getOrNull(index - 1)?.annotation?.winPercentLoss,
         )
     }
 

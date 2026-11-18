@@ -28,11 +28,11 @@ import kotlinx.coroutines.launch
 
 enum class SessionMode { PLAY_AI, TWO_PLAYER, IMPORT_ANALYSIS, POST_GAME_REVIEW }
 
-/** How the Two Player board faces the players. The board grid only turns in [SOLO_FLIP]. */
+/** How the 2 Player board faces the players. The board grid only turns in [SOLO_FLIP]. */
 enum class TwoPlayerView(val label: String, val short: String) {
-    /** Players sit opposite each other: White's ranks stay at the bottom; every piece turns 180° on Black's turn. */
+    /** Players sit opposite each other: Player 1's ranks stay at the bottom; every piece turns 180° on Player 2's turn. */
     OPPOSITE("Opposite Players (Piece Flip)", "Opposite"),
-    /** Players sit opposite each other: White's pieces always upright, Black's always upside down. */
+    /** Players sit opposite each other: Player 1's pieces always upright, Player 2's always upside down. */
     TABLETOP_SPLIT("Tabletop Split", "Tabletop"),
     /** One player handing the phone over: the whole board turns 180° to the side to move. */
     SOLO_FLIP("Solo Pass & Play (Board Flip)", "Board flip"),
@@ -46,6 +46,8 @@ data class WorkspaceState(
     val flipped: Boolean = false,
     /** Two Player only: how the board faces the two players. */
     val twoPlayerView: TwoPlayerView = TwoPlayerView.OPPOSITE,
+    /** 2 Player: the colour of Player 1, who sits at the bottom edge. */
+    val player1Side: Side = Side.WHITE,
     /** Free moves for both sides without engine replies (always on for import/review). */
     val analysisMode: Boolean = mode == SessionMode.IMPORT_ANALYSIS || mode == SessionMode.POST_GAME_REVIEW,
     val liveCoach: Boolean = false,
@@ -72,14 +74,21 @@ data class WorkspaceState(
     /** Players sit on opposite sides of the phone (the board grid never turns). */
     val tabletop: Boolean get() = mode == SessionMode.TWO_PLAYER && twoPlayerView != TwoPlayerView.SOLO_FLIP
     /** Rotation of White's / Black's piece icons in degrees (0 = upright for the bottom player). */
-    val whitePieceRotation: Float get() =
-        if (mode == SessionMode.TWO_PLAYER && twoPlayerView == TwoPlayerView.OPPOSITE && position.sideToMove == Side.BLACK) 180f else 0f
-    val blackPieceRotation: Float get() = when {
+    val whitePieceRotation: Float get() = pieceRotation(Side.WHITE)
+    val blackPieceRotation: Float get() = pieceRotation(Side.BLACK)
+    /** True when the player at the top edge (Player 2) is to move. */
+    val topPlayerToMove: Boolean get() = mode == SessionMode.TWO_PLAYER && position.sideToMove != player1Side
+
+    private fun pieceRotation(side: Side): Float = when {
         mode != SessionMode.TWO_PLAYER -> 0f
-        twoPlayerView == TwoPlayerView.TABLETOP_SPLIT -> 180f
-        twoPlayerView == TwoPlayerView.OPPOSITE && position.sideToMove == Side.BLACK -> 180f
+        twoPlayerView == TwoPlayerView.OPPOSITE -> if (topPlayerToMove) 180f else 0f
+        twoPlayerView == TwoPlayerView.TABLETOP_SPLIT -> if (side != player1Side) 180f else 0f
         else -> 0f
     }
+
+    /** Board orientation a 2 Player game should have right now. */
+    fun twoPlayerFlipped(): Boolean =
+        if (twoPlayerView == TwoPlayerView.SOLO_FLIP) position.sideToMove == Side.BLACK else player1Side == Side.BLACK
     val result: GameResult get() = timeline.resultAtCurrent()
     val gameOver: Boolean get() = result != GameResult.ONGOING
     val currentHint: Explanation? get() = hint?.takeIf { hintFen == position.toFen() }
@@ -149,9 +158,16 @@ class WorkspaceController(
         reschedule()
     }
 
-    fun newTwoPlayerGame() {
-        val t = GameTimeline(tags = mapOf("White" to "Player 1", "Black" to "Player 2"))
-        _state.value = WorkspaceState(s.mode, timeline = t, twoPlayerView = s.twoPlayerView, liveCoach = s.liveCoach, cardOpen = s.liveCoach, title = "Two Player")
+    /** New 2 Player game; [player1] is the colour of the player at the bottom edge. */
+    fun newTwoPlayerGame(player1: Side = s.player1Side) {
+        val t = GameTimeline(tags = mapOf(
+            "White" to if (player1 == Side.WHITE) "Player 1" else "Player 2",
+            "Black" to if (player1 == Side.BLACK) "Player 1" else "Player 2",
+        ))
+        _state.value = WorkspaceState(
+            s.mode, timeline = t, twoPlayerView = s.twoPlayerView, player1Side = player1, flipped = player1 == Side.BLACK,
+            liveCoach = s.liveCoach, cardOpen = s.liveCoach, title = "2 Player",
+        )
         recordId = null
         reschedule()
     }
@@ -239,8 +255,13 @@ class WorkspaceController(
     fun rotateButton() = _state.update { it.copy(flipped = !it.flipped) }
 
     /** Two Player orientation. Only Solo Pass & Play turns the board grid. */
-    fun setTwoPlayerView(v: TwoPlayerView) = _state.update {
-        it.copy(twoPlayerView = v, flipped = v == TwoPlayerView.SOLO_FLIP && it.position.sideToMove == Side.BLACK)
+    fun setTwoPlayerView(v: TwoPlayerView) = _state.update { it.copy(twoPlayerView = v).let { n -> n.copy(flipped = n.twoPlayerFlipped()) } }
+
+    /** Closes the summary and steps through the game from move 1 with the coach card open. */
+    fun startReview() {
+        summaryWhenDone = false
+        if (s.timeline.nodes.isEmpty()) { closeSummary(); return }
+        inspect(0)
     }
 
     /**

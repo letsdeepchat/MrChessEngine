@@ -32,6 +32,9 @@ interface CloudSync {
 
     /** [activity] is an android.app.Activity (kept as Any so this interface stays platform-free). */
     suspend fun signIn(activity: Any): Result<String>
+    /** E-mail + password sign-in, or sign-up when [createAccount] is true. Returns the e-mail. */
+    suspend fun signInWithEmail(email: String, password: String, createAccount: Boolean): Result<String>
+    suspend fun sendPasswordReset(email: String): Result<Unit>
     suspend fun signOut()
     suspend fun push(records: List<CloudGameRecord>)
     suspend fun pull(): List<CloudGameRecord>
@@ -43,6 +46,9 @@ interface CloudSync {
         override val account: StateFlow<String?> = MutableStateFlow(null)
         override val profileName: StateFlow<String?> = MutableStateFlow(null)
         override suspend fun signIn(activity: Any) = Result.failure<String>(IllegalStateException("Cloud sync is not configured"))
+        override suspend fun signInWithEmail(email: String, password: String, createAccount: Boolean) =
+            Result.failure<String>(IllegalStateException("Cloud sync is not configured"))
+        override suspend fun sendPasswordReset(email: String) = Result.failure<Unit>(IllegalStateException("Cloud sync is not configured"))
         override suspend fun signOut() {}
         override suspend fun push(records: List<CloudGameRecord>) {}
         override suspend fun pull(): List<CloudGameRecord> = emptyList()

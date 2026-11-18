@@ -17,6 +17,8 @@ import com.mrchess.core.rules.Side
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
+import kotlinx.coroutines.flow.combine
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.flow.update
@@ -62,6 +64,20 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
     private val _message = MutableStateFlow<String?>(null)
     val message: StateFlow<String?> = _message
 
+    val botDefaults: StateFlow<BotDefaults> = mrApp.settings.botDefaults.stateIn(viewModelScope, SharingStarted.Eagerly, BotDefaults())
+    private val _pendingNewGame = MutableStateFlow(false)
+    /** "+ New Game" was tapped in Import/Review: the Play tab should open its New Game dialog. */
+    val pendingNewGame: StateFlow<Boolean> = _pendingNewGame
+
+    /** First-launch gate: null while settings load, true = show the welcome / sign-in screen. */
+    val showWelcome: StateFlow<Boolean?> = combine(mrApp.settings.guestMode, history.cloud.account) { guest, account -> !guest && account == null }
+        .stateIn(viewModelScope, SharingStarted.Eagerly, null)
+    private val _showAuth = MutableStateFlow(false)
+    /** The sign-in screen opened later from ⋮ or the Review tab. */
+    val showAuth: StateFlow<Boolean> = _showAuth
+    private val _authBusy = MutableStateFlow(false)
+    val authBusy: StateFlow<Boolean> = _authBusy
+
     private fun controller(mode: SessionMode) =
         WorkspaceController(ctx, viewModelScope, mode, sounds, history)
 
@@ -76,6 +92,10 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
     init {
         play.newGame(Side.WHITE, 1500)
         activate()
+        viewModelScope.launch {
+            val d = mrApp.settings.botDefaults.first()
+            if (d.saved && play.state.value.timeline.nodes.isEmpty()) play.newGame(d.color.resolve(), d.elo)
+        }
         viewModelScope.launch {
             history.migrateLegacyPgnFiles()
             history.sync()
@@ -118,18 +138,59 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
 
     // ------------------------------------------------------------------ cloud backup
 
-    fun signIn(activity: Activity) {
+    fun signIn(activity: Activity) = authenticate { history.cloud.signIn(activity) }
+
+    fun signInWithEmail(email: String, password: String, create: Boolean) =
+        authenticate { history.cloud.signInWithEmail(email.trim(), password, create) }
+
+    fun resetPassword(email: String) {
         viewModelScope.launch {
-            history.cloud.signIn(activity)
-                .onSuccess { email ->
-                    _message.value = "Signed in as $email. Merging your games with the cloud…"
-                    history.sync()
-                        .onSuccess { _message.value = "Signed in as $email. Your history is synced." }
-                        .onFailure { e -> _message.value = "Signed in as $email, but sync failed: ${e.message}" }
-                }
-                .onFailure { e -> if (e !is kotlinx.coroutines.CancellationException) _message.value = e.message ?: "Sign-in failed" }
+            history.cloud.sendPasswordReset(email.trim())
+                .onSuccess { _message.value = "Password reset e-mail sent to ${email.trim()}." }
+                .onFailure { e -> _message.value = e.message ?: "Could not send the reset e-mail" }
         }
     }
+
+    private fun authenticate(block: suspend () -> Result<String>) {
+        if (_authBusy.value) return
+        viewModelScope.launch {
+            _authBusy.value = true
+            try {
+                block()
+                    .onSuccess { email ->
+                        _showAuth.value = false
+                        _message.value = "Signed in as $email. Merging your games with the cloud…"
+                        history.sync()
+                            .onSuccess { _message.value = "Signed in as $email. Your game history is backed up and synced." }
+                            .onFailure { e -> _message.value = "Signed in as $email, but sync failed: ${e.message}" }
+                    }
+                    .onFailure { e -> if (e !is kotlinx.coroutines.CancellationException) _message.value = e.message ?: "Sign-in failed" }
+            } finally {
+                _authBusy.value = false
+            }
+        }
+    }
+
+    fun continueAsGuest() {
+        _showAuth.value = false
+        viewModelScope.launch { mrApp.settings.setGuestMode(true) }
+    }
+
+    fun openAuth() { _showAuth.value = true }
+    fun closeAuth() { _showAuth.value = false }
+
+    // ------------------------------------------------------------------ new game plumbing
+
+    fun botGameStarted(elo: Int, color: SideChoice, save: Boolean) {
+        if (save) viewModelScope.launch { mrApp.settings.setBotDefaults(elo, color) }
+    }
+
+    fun newGameFromElsewhere() {
+        _pendingNewGame.value = true
+        go(Screen.PLAY)
+    }
+
+    fun newGameOpened() { _pendingNewGame.value = false }
 
     fun signOut() { viewModelScope.launch { history.cloud.signOut() } }
 
@@ -261,10 +322,11 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
     }
 
     /** Opens the current Play / Two Player game in Review. */
-    fun reviewFrom(c: WorkspaceController) {
+    fun reviewFrom(c: WorkspaceController, fromMove1: Boolean = false) {
         val st = c.state.value
         if (st.timeline.nodes.isEmpty()) return
         openReview(st.timeline.toStart(), st.title)
+        if (fromMove1) _reviewWs.value?.startReview()
     }
 
     override fun onCleared() {

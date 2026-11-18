@@ -40,6 +40,7 @@ import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.Flag
 import androidx.compose.material.icons.filled.QueryStats
 import androidx.compose.material.icons.filled.RestartAlt
+import androidx.compose.material.icons.filled.Share
 import androidx.compose.material.icons.filled.ChevronLeft
 import androidx.compose.material.icons.filled.ChevronRight
 import androidx.compose.material.icons.filled.Close
@@ -52,6 +53,10 @@ import androidx.compose.material.icons.filled.Stop
 import androidx.compose.material.icons.filled.SwapVert
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
+import androidx.compose.material3.ButtonDefaults
+import androidx.compose.material3.Checkbox
+import androidx.compose.material3.HorizontalDivider
+import androidx.compose.material3.RadioButton
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
@@ -88,10 +93,13 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.window.Dialog
+import androidx.compose.ui.window.DialogProperties
 import com.mrchess.app.audio.ChessVoiceNarrator
 import com.mrchess.core.engine.EngineStrength
 import com.mrchess.core.explain.Explanation
+import com.mrchess.core.review.GamePhase
 import com.mrchess.core.review.MoveQuality
 import com.mrchess.core.rules.Move
 import com.mrchess.core.rules.Piece
@@ -118,6 +126,38 @@ data class HeaderAction(val label: String, val onClick: () -> Unit)
 /** A one-tap icon + label button in the bar under the board. */
 data class BarAction(val icon: ImageVector, val label: String, val enabled: Boolean = true, val onClick: () -> Unit)
 
+/** Colour choice in the New Game dialogs. [id] is persisted. */
+enum class SideChoice(val id: String, val label: String) {
+    WHITE("white", "Play White"), BLACK("black", "Play Black"), RANDOM("random", "Random");
+
+    fun resolve(): Side = when (this) {
+        WHITE -> Side.WHITE
+        BLACK -> Side.BLACK
+        RANDOM -> if (kotlin.random.Random.nextBoolean()) Side.WHITE else Side.BLACK
+    }
+
+    companion object { fun byId(id: String?) = entries.firstOrNull { it.id == id } ?: WHITE }
+}
+
+/** The Stockfish New Game defaults the player saved ([saved] = false: nothing saved yet). */
+data class BotDefaults(val elo: Int = 1500, val color: SideChoice = SideChoice.WHITE, val saved: Boolean = false)
+
+/** Everything a board screen needs from outside its own session. */
+data class WorkspaceHooks(
+    /** Opens this game in the Review tab ([fromMove1]: step through from move 1). */
+    val onReview: (fromMove1: Boolean) -> Unit = {},
+    /** Import: start a new import. Review: back to the saved games. */
+    val onClose: () -> Unit = {},
+    /** "+ New Game" from Import/Review: go to Play and open its New Game dialog. */
+    val onNewGameElsewhere: () -> Unit = {},
+    val botDefaults: BotDefaults = BotDefaults(),
+    val onBotGameStarted: (elo: Int, color: SideChoice, saveAsDefault: Boolean) -> Unit = { _, _, _ -> },
+    /** Open the New Game dialog now (requested from another tab). */
+    val openNewGame: Boolean = false,
+    val onNewGameOpened: () -> Unit = {},
+    val onShare: (String) -> Unit = {},
+)
+
 /**
  * The one board screen used by Play, Two Player, Import and Review. The vertical layout is
  * rigid: header, move strip, a flexible slack zone, the board, then two fixed bars. Pop-ups float
@@ -130,17 +170,31 @@ fun UnifiedChessWorkspace(
     narrator: ChessVoiceNarrator,
     speaking: Boolean,
     menu: List<HeaderAction>,
-    /** Opens this game in the Review tab. */
-    onReview: () -> Unit = {},
-    /** Import: start a new import. Review: back to the saved games. */
-    onClose: () -> Unit = {},
+    hooks: WorkspaceHooks = WorkspaceHooks(),
 ) {
     var showNewGame by remember { mutableStateOf(false) }
+    var showNewGame2p by remember { mutableStateOf(false) }
     var confirmResign by remember { mutableStateOf(false) }
+    LaunchedEffect(hooks.openNewGame) {
+        if (hooks.openNewGame) {
+            if (st.mode == SessionMode.PLAY_AI) showNewGame = true else if (st.mode == SessionMode.TWO_PLAYER) showNewGame2p = true
+            hooks.onNewGameOpened()
+        }
+    }
+    val onReview = { hooks.onReview(false) }
+    val onClose = hooks.onClose
+    val newGame: () -> Unit = {
+        when (st.mode) {
+            SessionMode.PLAY_AI -> showNewGame = true
+            SessionMode.TWO_PLAYER -> showNewGame2p = true
+            else -> hooks.onNewGameElsewhere()
+        }
+        Unit
+    }
     val hasMoves = st.timeline.nodes.isNotEmpty()
     val actions = when (st.mode) {
         SessionMode.PLAY_AI, SessionMode.TWO_PLAYER -> listOf(
-            BarAction(Icons.Filled.Add, "New Game") { if (st.mode == SessionMode.PLAY_AI) showNewGame = true else c.newTwoPlayerGame() },
+            BarAction(Icons.Filled.Add, "New Game") { newGame() },
             if (st.gameOver) BarAction(Icons.Filled.RestartAlt, "Restart") { c.restart() }
             else BarAction(Icons.Filled.Flag, "Resign", enabled = hasMoves) { confirmResign = true },
             BarAction(Icons.AutoMirrored.Filled.Undo, "Undo", enabled = hasMoves) { c.undo() },
@@ -219,32 +273,55 @@ fun UnifiedChessWorkspace(
         }
     }
 
-    if (st.showSummary) SummaryDialog(st, c)
+    if (st.showSummary) SummaryDialog(
+        st, c,
+        onShare = { hooks.onShare(shareText(st)) },
+        onNewGame = { c.closeSummary(); newGame() },
+        onStartReview = {
+            if (st.mode == SessionMode.PLAY_AI || st.mode == SessionMode.TWO_PLAYER) { c.closeSummary(); hooks.onReview(true) }
+            else c.startReview()
+        },
+    )
     if (confirmResign) AlertDialog(
         onDismissRequest = { confirmResign = false },
         title = { Text(if (st.mode == SessionMode.PLAY_AI) "Resign this game?" else "${st.position.sideToMove.label} resigns?") },
         confirmButton = { Button(onClick = { confirmResign = false; c.resign() }) { Text("Resign") } },
         dismissButton = { TextButton(onClick = { confirmResign = false }) { Text("Cancel") } },
     )
-    if (showNewGame) NewGameDialog(st.elo, onDismiss = { showNewGame = false }) { side, elo -> showNewGame = false; c.newGame(side, elo) }
+    if (showNewGame) {
+        val d = hooks.botDefaults
+        NewGameDialog(
+            initialElo = if (d.saved) d.elo else st.elo,
+            initialColor = if (d.saved) d.color else if (st.userSide == Side.BLACK) SideChoice.BLACK else SideChoice.WHITE,
+            onDismiss = { showNewGame = false },
+        ) { choice, elo, save ->
+            showNewGame = false
+            c.newGame(choice.resolve(), elo)
+            hooks.onBotGameStarted(elo, choice, save)
+        }
+    }
+    if (showNewGame2p) TwoPlayerNewGameDialog(
+        current = if (st.player1Side == Side.BLACK) SideChoice.BLACK else SideChoice.WHITE,
+        onDismiss = { showNewGame2p = false },
+    ) { choice -> showNewGame2p = false; c.newTwoPlayerGame(choice.resolve()) }
     st.pendingPromotion?.let { PromotionDialog(st.position.sideToMove, c::choosePromotion) }
     st.error?.let { err -> AlertDialog(onDismissRequest = c::clearError, confirmButton = { TextButton(onClick = c::clearError) { Text("OK") } }, text = { Text(err) }) }
 }
 
-/** Turn label at the board's top edge; upside down on Black's turn so the opposite player can read it. */
+/** Turn label at the board's top edge; upside down on Player 2's turn so the opposite player can read it. */
 @Composable
 private fun TabletopTurn(st: WorkspaceState, modifier: Modifier) {
     val black = st.position.sideToMove == Side.BLACK
+    val player = if (st.topPlayerToMove) "Player 2" else "Player 1"
     val text = when {
         st.gameOver -> st.status ?: "Game over"
-        black -> "Black to move"
-        else -> "White to move"
+        else -> "$player (${st.position.sideToMove.label}) to move"
     }
     Surface(
         shape = RoundedCornerShape(50),
         color = if (black) Color(0xFF202020) else Color(0xFFF2F2F2),
         border = BorderStroke(1.dp, Color(0xFF9E9E9E)),
-        modifier = modifier.graphicsLayer { rotationZ = if (black && !st.gameOver) 180f else 0f },
+        modifier = modifier.graphicsLayer { rotationZ = if (st.topPlayerToMove && !st.gameOver) 180f else 0f },
     ) {
         Text(text, color = if (black) Color.White else Color(0xFF202020), style = MaterialTheme.typography.labelLarge,
             fontWeight = FontWeight.Bold, modifier = Modifier.padding(horizontal = 14.dp, vertical = 4.dp))
@@ -525,13 +602,17 @@ private fun TagChip(text: String) {
 // ---------------------------------------------------------------------------- summary
 
 @Composable
-private fun SummaryDialog(st: WorkspaceState, c: WorkspaceController) {
+private fun SummaryDialog(st: WorkspaceState, c: WorkspaceController, onShare: () -> Unit, onNewGame: () -> Unit, onStartReview: () -> Unit) {
     val sum = st.summary
-    Dialog(onDismissRequest = c::closeSummary) {
-        Surface(color = CardBg, contentColor = CardText, shape = RoundedCornerShape(16.dp), border = BorderStroke(1.dp, CardBorder), shadowElevation = 8.dp) {
-            Column(Modifier.padding(16.dp)) {
+    val maxH = (LocalConfiguration.current.screenHeightDp * 0.9f).dp
+    Dialog(onDismissRequest = c::closeSummary, properties = DialogProperties(usePlatformDefaultWidth = false)) {
+        Surface(
+            color = CardBg, contentColor = CardText, shape = RoundedCornerShape(16.dp), border = BorderStroke(1.dp, CardBorder), shadowElevation = 8.dp,
+            modifier = Modifier.fillMaxWidth(0.94f).heightIn(max = maxH),
+        ) {
+            Column(Modifier.verticalScroll(rememberScrollState()).padding(16.dp)) {
                 Row(verticalAlignment = Alignment.CenterVertically) {
-                    Text("Game summary", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold, modifier = Modifier.weight(1f))
+                    Text("Game Review", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold, modifier = Modifier.weight(1f))
                     IconButton(onClick = c::closeSummary) { Icon(Icons.Filled.Close, "Close", tint = CardText) }
                 }
                 if (sum.total == 0) { Text("Play some moves first.", color = CardMuted); return@Column }
@@ -541,16 +622,14 @@ private fun SummaryDialog(st: WorkspaceState, c: WorkspaceController) {
                     Spacer(Modifier.weight(1.4f))
                     for (side in Side.entries) Text(st.timeline.tags[side.label] ?: side.label, Modifier.weight(1f), fontWeight = FontWeight.Bold, maxLines = 1, overflow = TextOverflow.Ellipsis)
                 }
-                Row(Modifier.padding(vertical = 4.dp)) {
+                Row(Modifier.padding(vertical = 4.dp), verticalAlignment = Alignment.CenterVertically) {
                     Text("Accuracy", Modifier.weight(1.4f), color = CardMuted)
-                    for (acc in listOf(sum.accuracyWhite, sum.accuracyBlack)) Text(acc?.let { "%.1f%%".format(it) } ?: "–", Modifier.weight(1f), fontWeight = FontWeight.Bold)
+                    for (side in Side.entries) RatingPill(sum.accuracy(side)?.let { "%.1f".format(it) } ?: "–", side, Modifier.weight(1f))
                 }
                 for (q in MoveQuality.SUMMARY) {
                     Row(Modifier.padding(vertical = 3.dp), verticalAlignment = Alignment.CenterVertically) {
                         Row(Modifier.weight(1.4f), verticalAlignment = Alignment.CenterVertically) {
-                            Box(Modifier.size(18.dp).background(Color(q.color), RoundedCornerShape(50)), contentAlignment = Alignment.Center) {
-                                Text(q.symbol, color = Color.White, fontSize = 9.sp, fontWeight = FontWeight.Bold)
-                            }
+                            QualityDot(q, 18.dp)
                             Text("  ${q.label}")
                         }
                         for (side in Side.entries) {
@@ -565,19 +644,112 @@ private fun SummaryDialog(st: WorkspaceState, c: WorkspaceController) {
                         }
                     }
                 }
-                Spacer(Modifier.height(6.dp))
+                HorizontalDivider(Modifier.padding(vertical = 10.dp), color = CardBorder)
+                Row(Modifier.padding(vertical = 4.dp), verticalAlignment = Alignment.CenterVertically) {
+                    Text("Game Rating", Modifier.weight(1.4f), fontWeight = FontWeight.SemiBold)
+                    for (side in Side.entries) RatingPill(sum.gameRating(side, ratingBase(st.timeline, side))?.toString() ?: "–", side, Modifier.weight(1f))
+                }
+                for (p in GamePhase.entries) {
+                    Row(Modifier.padding(vertical = 4.dp), verticalAlignment = Alignment.CenterVertically) {
+                        Text(p.label, Modifier.weight(1.4f), color = CardMuted)
+                        for (side in Side.entries) {
+                            val ph = sum.phase(side, p)
+                            Row(Modifier.weight(1f), verticalAlignment = Alignment.CenterVertically) {
+                                if (ph == null) Text("—", color = CardMuted)
+                                else { Text("%.1f%% ".format(ph.accuracy)); QualityDot(ph.badge, 16.dp) }
+                            }
+                        }
+                    }
+                }
+                for ((label, badge) in listOf<Pair<String, (Side) -> MoveQuality?>>("Tactics" to sum::tacticsBadge, "Strategy" to sum::strategyBadge)) {
+                    Row(Modifier.padding(vertical = 4.dp), verticalAlignment = Alignment.CenterVertically) {
+                        Text(label, Modifier.weight(1.4f), color = CardMuted)
+                        for (side in Side.entries) {
+                            Row(Modifier.weight(1f), verticalAlignment = Alignment.CenterVertically) {
+                                val q = badge(side)
+                                if (q == null) Text("—", color = CardMuted) else { QualityDot(q, 16.dp); Text(" ${q.label}", style = MaterialTheme.typography.bodySmall) }
+                            }
+                        }
+                    }
+                }
+                Spacer(Modifier.height(4.dp))
                 Text("Tap a count to jump to that move.", style = MaterialTheme.typography.bodySmall, color = CardMuted)
+                Spacer(Modifier.height(10.dp))
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    OutlinedButton(onClick = onShare, modifier = Modifier.weight(1f), border = BorderStroke(1.dp, CardBorder)) {
+                        Icon(Icons.Filled.Share, null, Modifier.size(16.dp), tint = CardText); Spacer(Modifier.width(6.dp)); Text("Share", color = CardText)
+                    }
+                    OutlinedButton(onClick = onNewGame, modifier = Modifier.weight(1f), border = BorderStroke(1.dp, CardBorder)) {
+                        Icon(Icons.Filled.Add, null, Modifier.size(16.dp), tint = CardText); Spacer(Modifier.width(6.dp)); Text("New Game", color = CardText)
+                    }
+                }
+                Spacer(Modifier.height(8.dp))
+                Button(
+                    onClick = onStartReview, modifier = Modifier.fillMaxWidth().height(48.dp),
+                    colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF81B64C), contentColor = Color.White),
+                ) { Text("Start Review", fontWeight = FontWeight.Bold) }
             }
         }
+    }
+}
+
+@Composable
+private fun QualityDot(q: MoveQuality, size: androidx.compose.ui.unit.Dp) {
+    Box(Modifier.size(size).background(Color(q.color), RoundedCornerShape(50)), contentAlignment = Alignment.Center) {
+        Text(q.symbol, color = Color.White, fontSize = (size.value * 0.5f).sp, fontWeight = FontWeight.Bold, maxLines = 1)
+    }
+}
+
+/** White or dark rounded badge, like Chess.com's accuracy / rating chips. */
+@Composable
+private fun RatingPill(text: String, side: Side, modifier: Modifier) {
+    Box(modifier) {
+        Surface(
+            color = if (side == Side.WHITE) Color(0xFFF2F2F2) else Color(0xFF2B2B2B),
+            contentColor = if (side == Side.WHITE) Color(0xFF202020) else Color.White,
+            shape = RoundedCornerShape(8.dp), border = BorderStroke(1.dp, CardBorder),
+        ) { Text(text, fontWeight = FontWeight.Bold, modifier = Modifier.padding(horizontal = 10.dp, vertical = 3.dp)) }
+    }
+}
+
+/** A side's known rating: an Elo tag, or the engine strength in a "Stockfish 2400" player name. */
+private fun knownElo(t: com.mrchess.core.rules.GameTimeline, side: Side): Int? {
+    t.tags["${side.label}Elo"]?.toIntOrNull()?.let { return it }
+    val name = t.tags[side.label] ?: return null
+    if (!name.startsWith("Stockfish")) return null
+    return Regex("\\d{3,4}").find(name)?.value?.toIntOrNull() ?: 3200
+}
+
+/** Base for the game rating: the opponent's rating when known, else this side's own, else 1500. */
+private fun ratingBase(t: com.mrchess.core.rules.GameTimeline, side: Side): Int = knownElo(t, side.opposite) ?: knownElo(t, side) ?: 1500
+
+/** Plain-text review for the Android share sheet. */
+private fun shareText(st: WorkspaceState): String {
+    val sum = st.summary
+    val t = st.timeline
+    val w = t.tags["White"] ?: "White"
+    val b = t.tags["Black"] ?: "Black"
+    return buildString {
+        appendLine("Mr. Chess Trainer game review")
+        appendLine("$w vs $b · ${t.toGame().result.pgn}")
+        appendLine("Accuracy: $w ${sum.accuracyWhite?.let { "%.1f%%".format(it) } ?: "–"} · $b ${sum.accuracyBlack?.let { "%.1f%%".format(it) } ?: "–"}")
+        appendLine("Game rating: $w ${sum.gameRating(Side.WHITE, ratingBase(t, Side.WHITE)) ?: "–"} · $b ${sum.gameRating(Side.BLACK, ratingBase(t, Side.BLACK)) ?: "–"}")
+        for (q in MoveQuality.SUMMARY) {
+            val nw = sum.count(Side.WHITE, q); val nb = sum.count(Side.BLACK, q)
+            if (nw + nb > 0) appendLine("${q.symbol} ${q.label}: $nw / $nb")
+        }
+        appendLine()
+        append(t.toGame().toPgn())
     }
 }
 
 // ---------------------------------------------------------------------------- dialogs
 
 @Composable
-fun NewGameDialog(currentElo: Int, onDismiss: () -> Unit, onStart: (Side, Int) -> Unit) {
-    var elo by remember { mutableIntStateOf(currentElo) }
-    var side by remember { mutableStateOf(Side.WHITE) }
+fun NewGameDialog(initialElo: Int, initialColor: SideChoice, onDismiss: () -> Unit, onStart: (SideChoice, Int, Boolean) -> Unit) {
+    var elo by remember { mutableIntStateOf(initialElo) }
+    var color by remember { mutableStateOf(initialColor) }
+    var saveDefault by remember { mutableStateOf(true) }
     AlertDialog(
         onDismissRequest = onDismiss,
         title = { Text("New game") },
@@ -586,14 +758,51 @@ fun NewGameDialog(currentElo: Int, onDismiss: () -> Unit, onStart: (Side, Int) -
                 Text("Opponent: ${WorkspaceController.eloLabel(elo)}")
                 Slider(value = elo.toFloat(), onValueChange = { elo = (it / 50).roundToInt() * 50 }, valueRange = 800f..3200f, steps = (3200 - 800) / 50 - 1)
                 Text("Slide fully right for unlimited Stockfish (3200+).", style = MaterialTheme.typography.bodySmall)
-                Spacer(Modifier.height(8.dp))
-                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    FilterChip(side == Side.WHITE, { side = Side.WHITE }, { Text("Play White") })
-                    FilterChip(side == Side.BLACK, { side = Side.BLACK }, { Text("Play Black") })
+                Row(Modifier.fillMaxWidth().clickable { saveDefault = !saveDefault }, verticalAlignment = Alignment.CenterVertically) {
+                    Checkbox(checked = saveDefault, onCheckedChange = { saveDefault = it })
+                    Text("Set as default Elo level and colour", style = MaterialTheme.typography.bodyMedium)
+                }
+                Spacer(Modifier.height(4.dp))
+                Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                    SideChoice.entries.forEach { ch -> FilterChip(color == ch, { color = ch }, { Text(ch.label) }) }
                 }
             }
         },
-        confirmButton = { Button(onClick = { onStart(side, elo) }) { Text("Start") } },
+        confirmButton = { Button(onClick = { onStart(color, elo, saveDefault) }) { Text("Start") } },
+        dismissButton = { TextButton(onClick = onDismiss) { Text("Cancel") } },
+    )
+}
+
+/** 2 Player: which colour Player 1 (bottom edge) plays. */
+@Composable
+fun TwoPlayerNewGameDialog(current: SideChoice, onDismiss: () -> Unit, onStart: (SideChoice) -> Unit) {
+    var color by remember { mutableStateOf(current) }
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text("New 2 Player game") },
+        text = {
+            Column {
+                Text("Player 1 sits at the bottom edge. Player 2 sits opposite.", style = MaterialTheme.typography.bodyMedium)
+                Spacer(Modifier.height(8.dp))
+                SideChoice.entries.forEach { ch ->
+                    Row(Modifier.fillMaxWidth().clickable { color = ch }.padding(vertical = 2.dp), verticalAlignment = Alignment.CenterVertically) {
+                        RadioButton(selected = color == ch, onClick = { color = ch })
+                        Column {
+                            Text(ch.label, fontWeight = FontWeight.SemiBold)
+                            Text(
+                                when (ch) {
+                                    SideChoice.WHITE -> "Player 1 = White (bottom), Player 2 = Black (top)"
+                                    SideChoice.BLACK -> "Player 1 = Black (bottom), Player 2 = White (top)"
+                                    SideChoice.RANDOM -> "50/50 coin toss"
+                                },
+                                style = MaterialTheme.typography.bodySmall,
+                            )
+                        }
+                    }
+                }
+            }
+        },
+        confirmButton = { Button(onClick = { onStart(color) }) { Text("Start") } },
         dismissButton = { TextButton(onClick = onDismiss) { Text("Cancel") } },
     )
 }

@@ -111,7 +111,7 @@ private fun CloudCard(cloud: CloudUi) {
                 cloud.account == null -> {
                     Text("Back up your history", fontWeight = FontWeight.SemiBold)
                     Text("Optional. Sign in with Google to keep your games if you clear the app or change phones.", style = MaterialTheme.typography.bodySmall)
-                    FilledTonalButton(onClick = cloud.onSignIn, modifier = Modifier.padding(top = 6.dp)) { Text("Sign in with Google to sync history") }
+                    FilledTonalButton(onClick = cloud.onSignIn, modifier = Modifier.padding(top = 6.dp)) { Text("Sign in / Sign up to back up games") }
                 }
                 else -> {
                     Text(cloud.name ?: "Signed in", fontWeight = FontWeight.SemiBold)

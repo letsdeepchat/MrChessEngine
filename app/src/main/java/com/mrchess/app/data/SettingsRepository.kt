@@ -10,6 +10,8 @@ import androidx.datastore.preferences.core.stringSetPreferencesKey
 import androidx.datastore.preferences.preferencesDataStore
 import com.mrchess.app.audio.SoundPack
 import com.mrchess.app.ui.BoardTheme
+import com.mrchess.app.ui.BotDefaults
+import com.mrchess.app.ui.SideChoice
 import com.mrchess.core.puzzle.PuzzleRating
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.map
@@ -28,6 +30,22 @@ class SettingsRepository(private val context: Context) {
     private val puzzlePlayedKey = intPreferencesKey("puzzle_played")
     private val puzzleSolvedKey = intPreferencesKey("puzzle_solved")
     private val puzzleSeenKey = stringSetPreferencesKey("puzzle_seen")
+    private val botEloKey = intPreferencesKey("default_bot_elo")
+    private val botColorKey = stringPreferencesKey("default_bot_color")
+    private val guestKey = booleanPreferencesKey("is_guest_mode")
+
+    /** Stockfish New Game defaults ("Set as default Elo level and colour"). */
+    val botDefaults: Flow<BotDefaults> = context.settingsStore.data.map {
+        BotDefaults(it[botEloKey] ?: 1500, SideChoice.byId(it[botColorKey]), saved = it[botEloKey] != null)
+    }
+    suspend fun setBotDefaults(elo: Int, color: SideChoice) = context.settingsStore.edit {
+        it[botEloKey] = elo
+        it[botColorKey] = color.id
+    }
+
+    /** True once the player chose "Play as Guest" on the welcome screen. */
+    val guestMode: Flow<Boolean> = context.settingsStore.data.map { it[guestKey] ?: false }
+    suspend fun setGuestMode(on: Boolean) = context.settingsStore.edit { it[guestKey] = on }
 
     val boardTheme: Flow<BoardTheme> = context.settingsStore.data.map { BoardTheme.byId(it[themeKey]) }
 

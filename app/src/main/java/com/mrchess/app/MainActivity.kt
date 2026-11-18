@@ -30,7 +30,9 @@ import androidx.compose.material3.lightColorScheme
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.TextButton
@@ -43,6 +45,8 @@ import com.mrchess.app.ui.ImportScreen
 import com.mrchess.app.ui.MainViewModel
 import com.mrchess.app.ui.PuzzleScreen
 import com.mrchess.app.ui.ReviewList
+import com.mrchess.app.ui.WelcomeScreen
+import com.mrchess.app.ui.WorkspaceHooks
 import com.mrchess.app.ui.SoundPackSheet
 import com.mrchess.app.ui.Screen
 import com.mrchess.app.ui.UnifiedChessWorkspace
@@ -72,39 +76,74 @@ class MainActivity : ComponentActivity() {
                 val account by vm.cloudAccount.collectAsStateWithLifecycle()
                 val accountName by vm.cloudName.collectAsStateWithLifecycle()
                 val message by vm.message.collectAsStateWithLifecycle()
-                // ⋮ menu: customisation only (game actions are one tap away under the board).
+                val showWelcome by vm.showWelcome.collectAsStateWithLifecycle()
+                val showAuth by vm.showAuth.collectAsStateWithLifecycle()
+                val authBusy by vm.authBusy.collectAsStateWithLifecycle()
+                val botDefaults by vm.botDefaults.collectAsStateWithLifecycle()
+                val pendingNewGame by vm.pendingNewGame.collectAsStateWithLifecycle()
+                // ⋮ menu: customisation and account (game actions are one tap away under the board).
                 val common = buildList {
                     add(HeaderAction("Board theme: ${theme.label}…") { vm.openThemeSheet() })
                     add(HeaderAction("Board sounds: ${soundPack.label}…") { vm.openSoundSheet() })
                     if (!naturalVoice) add(HeaderAction("Download natural voice") { vm.downloadNaturalVoice() })
+                    if (vm.cloudAvailable) add(
+                        if (account == null) HeaderAction("Sign in / Sign up to back up games…") { vm.openAuth() }
+                        else HeaderAction("Account: $account") { vm.go(Screen.REVIEW) },
+                    )
+                }
+                fun hooks(c: WorkspaceController) = WorkspaceHooks(
+                    onReview = { fromMove1 -> vm.reviewFrom(c, fromMove1) },
+                    onClose = { if (c === vm.importWorkspace.value) vm.closeImported() else vm.closeReview() },
+                    onNewGameElsewhere = vm::newGameFromElsewhere,
+                    botDefaults = botDefaults,
+                    onBotGameStarted = vm::botGameStarted,
+                    openNewGame = pendingNewGame && c === vm.play,
+                    onNewGameOpened = vm::newGameOpened,
+                    onShare = ::shareText,
+                )
+                if (showWelcome == null) return@CompositionLocalProvider // settings still loading: avoid a flash of the wrong screen
+                if (showWelcome == true || showAuth) {
+                    WelcomeScreen(
+                        busy = authBusy,
+                        cloudAvailable = vm.cloudAvailable,
+                        dismissible = showWelcome != true,
+                        onGoogle = { vm.signIn(this@MainActivity) },
+                        onEmail = vm::signInWithEmail,
+                        onResetPassword = vm::resetPassword,
+                        onGuest = { if (showWelcome == true) vm.continueAsGuest() else vm.closeAuth() },
+                    )
+                    message?.let { m ->
+                        AlertDialog(onDismissRequest = vm::clearMessage, confirmButton = { TextButton(onClick = vm::clearMessage) { Text("OK") } }, text = { Text(m) })
+                    }
+                    return@CompositionLocalProvider
                 }
                 Scaffold(
                     bottomBar = {
                         NavigationBar(Modifier.height(64.dp)) {
-                            NavigationBarItem(screen == Screen.PLAY, { vm.go(Screen.PLAY) }, { Icon(Icons.Filled.SportsEsports, null) }, label = { Text("Play") })
-                            NavigationBarItem(screen == Screen.TWO_PLAYER, { vm.go(Screen.TWO_PLAYER) }, { Icon(Icons.Filled.People, null) }, label = { Text("Two Player") })
-                            NavigationBarItem(screen == Screen.IMPORT, { vm.go(Screen.IMPORT) }, { Icon(Icons.Filled.FileOpen, null) }, label = { Text("Import") })
-                            NavigationBarItem(screen == Screen.REVIEW, { vm.go(Screen.REVIEW) }, { Icon(Icons.Filled.Analytics, null) }, label = { Text("Review") })
-                            NavigationBarItem(screen == Screen.PUZZLES, { vm.go(Screen.PUZZLES) }, { Icon(Icons.Filled.Extension, null) }, label = { Text("Puzzles") })
+                            NavigationBarItem(screen == Screen.PLAY, { vm.go(Screen.PLAY) }, { Icon(Icons.Filled.SportsEsports, null) }, label = { NavLabel("Play") })
+                            NavigationBarItem(screen == Screen.TWO_PLAYER, { vm.go(Screen.TWO_PLAYER) }, { Icon(Icons.Filled.People, null) }, label = { NavLabel("2 Player") })
+                            NavigationBarItem(screen == Screen.IMPORT, { vm.go(Screen.IMPORT) }, { Icon(Icons.Filled.FileOpen, null) }, label = { NavLabel("Import") })
+                            NavigationBarItem(screen == Screen.REVIEW, { vm.go(Screen.REVIEW) }, { Icon(Icons.Filled.Analytics, null) }, label = { NavLabel("Review") })
+                            NavigationBarItem(screen == Screen.PUZZLES, { vm.go(Screen.PUZZLES) }, { Icon(Icons.Filled.Extension, null) }, label = { NavLabel("Puzzles") })
                         }
                     },
                 ) { pad ->
                     Box(Modifier.fillMaxSize().padding(pad)) {
                         when (screen) {
-                            Screen.PLAY -> Workspace(vm.play, common, onReview = { vm.reviewFrom(vm.play) })
-                            Screen.TWO_PLAYER -> Workspace(vm.twoPlayer, common, onReview = { vm.reviewFrom(vm.twoPlayer) })
+                            Screen.PLAY -> Workspace(vm.play, common, hooks(vm.play))
+                            Screen.TWO_PLAYER -> Workspace(vm.twoPlayer, common, hooks(vm.twoPlayer))
                             Screen.IMPORT -> importWs?.let { c ->
-                                Workspace(c, common, onReview = { vm.reviewFrom(c) }, onClose = vm::closeImported)
+                                Workspace(c, common, hooks(c))
                             } ?: ImportScreen(vm, importState)
                             Screen.PUZZLES -> {
                                 val ps by vm.puzzles.state.collectAsStateWithLifecycle()
                                 PuzzleScreen(ps, vm.puzzles, common)
                             }
                             Screen.REVIEW -> reviewWs?.let { c ->
-                                Workspace(c, common, onClose = vm::closeReview)
+                                Workspace(c, common, hooks(c))
                             } ?: ReviewList(
                                 saved,
-                                CloudUi(vm.cloudAvailable, account, { vm.signIn(this@MainActivity) }, vm::signOut, vm::syncNow, accountName),
+                                CloudUi(vm.cloudAvailable, account, vm::openAuth, vm::signOut, vm::syncNow, accountName),
                                 vm::reviewSaved, vm::deleteSaved, vm::clearHistory,
                             )
                         }
@@ -121,10 +160,25 @@ class MainActivity : ComponentActivity() {
     }
 
     @Composable
-    private fun Workspace(c: WorkspaceController, menu: List<HeaderAction>, onReview: () -> Unit = {}, onClose: () -> Unit = {}) {
+    private fun Workspace(c: WorkspaceController, menu: List<HeaderAction>, hooks: WorkspaceHooks) {
         val st by c.state.collectAsStateWithLifecycle()
         val speaking by vm.narrator.speaking.collectAsStateWithLifecycle()
-        UnifiedChessWorkspace(st, c, vm.narrator, speaking, menu, onReview, onClose)
+        UnifiedChessWorkspace(st, c, vm.narrator, speaking, menu, hooks)
+    }
+
+    /** Bottom-bar label: one line, slightly smaller, so "2 Player" lines up with the other tabs. */
+    @Composable
+    private fun NavLabel(text: String) =
+        Text(text, maxLines = 1, softWrap = false, overflow = TextOverflow.Visible, fontSize = 11.sp)
+
+    /** Game review text (accuracy, game rating, move counts, PGN) to the Android share sheet. */
+    private fun shareText(text: String) {
+        val send = Intent(Intent.ACTION_SEND).apply {
+            type = "text/plain"
+            putExtra(Intent.EXTRA_SUBJECT, "Mr. Chess Trainer game review")
+            putExtra(Intent.EXTRA_TEXT, text)
+        }
+        startActivity(Intent.createChooser(send, "Share game review"))
     }
 
     override fun onStop() {

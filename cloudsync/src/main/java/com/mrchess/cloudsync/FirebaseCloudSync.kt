@@ -1,34 +1,21 @@
 package com.mrchess.cloudsync
 
-import android.content.Intent
 import androidx.activity.ComponentActivity
-import androidx.activity.result.ActivityResult
-import androidx.activity.result.ActivityResultLauncher
-import androidx.activity.result.contract.ActivityResultContracts
 import android.content.Context
 import androidx.credentials.ClearCredentialStateRequest
-import androidx.credentials.exceptions.GetCredentialCancellationException
 import androidx.credentials.CredentialManager
-import androidx.credentials.CustomCredential
-import androidx.credentials.GetCredentialRequest
-import com.google.android.libraries.identity.googleid.GetSignInWithGoogleOption
-import com.google.android.libraries.identity.googleid.GoogleIdTokenCredential
 import com.google.firebase.auth.FirebaseAuth
-import com.google.android.gms.auth.api.signin.GoogleSignIn
-import com.google.android.gms.auth.api.signin.GoogleSignInOptions
-import com.google.android.gms.auth.api.signin.GoogleSignInStatusCodes
-import com.google.android.gms.common.api.ApiException
-import com.google.android.gms.common.api.CommonStatusCodes
-import com.google.firebase.auth.GoogleAuthProvider
-import com.google.firebase.auth.OAuthProvider
+import com.google.firebase.auth.FirebaseAuthException
+import com.google.firebase.auth.FirebaseAuthInvalidCredentialsException
+import com.google.firebase.auth.FirebaseAuthInvalidUserException
+import com.google.firebase.auth.FirebaseAuthUserCollisionException
+import com.google.firebase.auth.FirebaseAuthWeakPasswordException
 import com.google.firebase.firestore.FirebaseFirestore
 import com.mrchess.core.sync.CloudGameRecord
 import com.mrchess.core.sync.CloudSync
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
-import kotlinx.coroutines.suspendCancellableCoroutine
 import kotlinx.coroutines.tasks.await
-import kotlin.coroutines.resume
 
 /**
  * Google Sign-In (Credential Manager) + Firebase Auth + Cloud Firestore, free Spark tier.
@@ -47,117 +34,42 @@ class FirebaseCloudSync(context: Context, private val webClientId: String) : Clo
     override val account: StateFlow<String?> = _account
     override val profileName: StateFlow<String?> = _name
 
-    /**
-     * Sign in / sign up with Google, trying three routes so the account chooser always gets a chance:
-     *  1. Credential Manager "Sign in with Google" (full account picker, works for first-time users);
-     *  2. the Play services Google Sign-In account picker;
-     *  3. Firebase's hosted Google OAuth page in a Custom Tab.
-     * Routes 1 and 2 need the APK's SHA-1 registered in Firebase. Route 3 avoids the Play services
-     * client but Firebase still checks the app's package and certificate on the way back.
-     */
+    /** Google sign-in / sign-up; see [GoogleAuthHelper] for the three routes it tries. */
     override suspend fun signIn(activity: Any): Result<String> = runCatching {
-        val act = activity as ComponentActivity
-        val problems = mutableListOf<String>()
-
-        // Tier 1: Credential Manager.
-        val idToken: String? = try {
-            val option = GetSignInWithGoogleOption.Builder(webClientId).build()
-            val cred = CredentialManager.create(act).getCredential(act, GetCredentialRequest.Builder().addCredentialOption(option).build()).credential
-            require(cred is CustomCredential && cred.type == GoogleIdTokenCredential.TYPE_GOOGLE_ID_TOKEN_CREDENTIAL) { "Unexpected credential type" }
-            GoogleIdTokenCredential.createFrom(cred.data).idToken
-        } catch (e: GetCredentialCancellationException) {
-            throw SignInException("Sign-in cancelled.", e)
-        } catch (e: Exception) {
-            if (e is kotlinx.coroutines.CancellationException) throw e
-            problems += "Credential Manager: ${e.message ?: e.javaClass.simpleName}"
-            // Tier 2: Play services account picker.
-            try {
-                playServicesIdToken(act)
-            } catch (e2: CancelledException) {
-                throw SignInException("Sign-in cancelled.", e2)
-            } catch (e2: Exception) {
-                if (e2 is kotlinx.coroutines.CancellationException) throw e2
-                problems += "Google Sign-In: ${e2.message ?: e2.javaClass.simpleName}"
-                null
-            }
-        }
-
-        val user = if (idToken != null) {
-            try {
-                auth.signInWithCredential(GoogleAuthProvider.getCredential(idToken, null)).await().user
-            } catch (e: Exception) {
-                throw SignInException(
-                    "Google accepted the account but Firebase refused it (${e.message}). " +
-                        "In the Firebase console, check that Authentication → Sign-in method → Google is enabled.", e,
-                )
-            }
-        } else {
-            // Tier 3: Firebase-hosted Google OAuth in a Custom Tab.
-            try {
-                val provider = OAuthProvider.newBuilder("google.com").addCustomParameter("prompt", "select_account").build()
-                val pending = auth.pendingAuthResult
-                (pending ?: auth.startActivityForSignInWithProvider(act, provider)).await().user
-            } catch (e: Exception) {
-                if (e is kotlinx.coroutines.CancellationException) throw e
-                problems += "Browser sign-in: ${e.message ?: e.javaClass.simpleName}"
-                throw SignInException(explain(problems), e)
-            }
-        } ?: error("Sign-in returned no user")
+        val user = GoogleAuthHelper(auth, webClientId).signIn(activity as ComponentActivity)
         _name.value = user.displayName
         _account.value = user.email ?: user.uid
         _account.value!!
     }
 
-    private class CancelledException : Exception("cancelled")
-
-    /** Tier 2: the classic Play services account chooser, launched through the activity result registry. */
-    private suspend fun playServicesIdToken(act: ComponentActivity): String {
-        val gso = GoogleSignInOptions.Builder(GoogleSignInOptions.DEFAULT_SIGN_IN)
-            .requestIdToken(webClientId)
-            .requestEmail()
-            .build()
-        val client = GoogleSignIn.getClient(act, gso)
-        runCatching { client.signOut().await() } // always show the chooser, never silently reuse an account
-        val result = suspendCancellableCoroutine<ActivityResult> { cont ->
-            lateinit var launcher: ActivityResultLauncher<Intent>
-            launcher = act.activityResultRegistry.register("mrchess-google-${System.nanoTime()}", ActivityResultContracts.StartActivityForResult()) { r ->
-                launcher.unregister()
-                if (cont.isActive) cont.resume(r)
-            }
-            cont.invokeOnCancellation { launcher.unregister() }
-            launcher.launch(client.signInIntent)
-        }
-        try {
-            val account = GoogleSignIn.getSignedInAccountFromIntent(result.data).getResult(ApiException::class.java)
-            return account.idToken ?: error("Google returned no ID token")
-        } catch (e: ApiException) {
-            if (e.statusCode == GoogleSignInStatusCodes.SIGN_IN_CANCELLED) throw CancelledException()
-            throw IllegalStateException("status ${e.statusCode}" + when (e.statusCode) {
-                CommonStatusCodes.DEVELOPER_ERROR -> " (developer error: this APK's SHA-1 is not registered for com.mrchess.app)"
-                GoogleSignInStatusCodes.SIGN_IN_FAILED -> " (sign-in failed: usually the SHA-1 or the OAuth consent screen)"
-                CommonStatusCodes.NETWORK_ERROR -> " (no internet connection)"
-                else -> ""
-            }, e)
-        }
+    override suspend fun signInWithEmail(email: String, password: String, createAccount: Boolean): Result<String> = runCatching {
+        require(email.contains('@')) { "Enter a valid e-mail address." }
+        require(password.length >= 6) { "The password needs at least 6 characters." }
+        val user = try {
+            (if (createAccount) auth.createUserWithEmailAndPassword(email, password) else auth.signInWithEmailAndPassword(email, password)).await().user
+        } catch (e: FirebaseAuthUserCollisionException) {
+            throw IllegalStateException("An account with this e-mail already exists. Choose \"Sign in\" instead.", e)
+        } catch (e: FirebaseAuthWeakPasswordException) {
+            throw IllegalStateException("That password is too weak. Use at least 6 characters.", e)
+        } catch (e: FirebaseAuthInvalidUserException) {
+            throw IllegalStateException("No account with this e-mail. Choose \"Create account\" to sign up.", e)
+        } catch (e: FirebaseAuthInvalidCredentialsException) {
+            throw IllegalStateException("Wrong e-mail or password. New here? Choose \"Create account\".", e)
+        } catch (e: FirebaseAuthException) {
+            if (e.errorCode == "ERROR_OPERATION_NOT_ALLOWED")
+                throw IllegalStateException("E-mail sign-in is switched off for this app. In the Firebase console enable Authentication → Sign-in method → Email/Password.", e)
+            throw IllegalStateException("E-mail sign-in failed: ${e.message}", e)
+        } ?: error("Sign-in returned no user")
+        _name.value = user.displayName ?: user.email?.substringBefore('@')
+        _account.value = user.email ?: user.uid
+        _account.value!!
     }
 
-    private fun explain(problems: List<String>): String {
-        val all = problems.joinToString(" ")
-        val config = listOf("10", "12500", "28444", "28433", "developer", "No credentials", "SHA-1", "INVALID_CERT", "app_not_authorized", "not authorized")
-            .any { all.contains(it, ignoreCase = true) }
-        return buildString {
-            if (all.contains("network", ignoreCase = true)) append("Sign-in needs an internet connection. ")
-            if (config || !all.contains("network", ignoreCase = true)) {
-                append("Google refused this app's signing certificate. In the Firebase console open Project settings → Your apps → ")
-                append("com.mrchess.app → Add fingerprint, paste SHA-1 D4:36:F4:E5:35:57:2E:7C:80:B3:D3:02:3A:32:A1:CD:55:A6:82:0D, ")
-                append("save, wait about 5 minutes and try again. Also check Authentication → Sign-in method → Google is enabled. ")
-            }
-            append("You can keep using every feature without signing in.")
-            append("\n\nDetails: ").append(problems.joinToString("; "))
-        }
+    override suspend fun sendPasswordReset(email: String): Result<Unit> = runCatching {
+        require(email.contains('@')) { "Enter your e-mail address first." }
+        auth.sendPasswordResetEmail(email).await()
+        Unit
     }
-
-    private class SignInException(message: String, cause: Throwable) : Exception(message, cause)
 
     override suspend fun signOut() {
         auth.signOut()
