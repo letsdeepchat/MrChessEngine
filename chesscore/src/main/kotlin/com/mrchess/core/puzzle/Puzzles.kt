@@ -4,6 +4,7 @@ import com.mrchess.core.rules.Move
 import com.mrchess.core.rules.Position
 import com.mrchess.core.rules.Side
 import kotlin.math.pow
+import kotlin.random.Random
 import kotlin.math.roundToInt
 
 /**
@@ -33,10 +34,69 @@ object PuzzleSet {
         s.bufferedReader().useLines { lines -> lines.drop(1).mapNotNull(Puzzle::parseCsvLine).toList() }
     }
 
-    /** The unplayed puzzle whose rating is closest to [userRating] (repeats once everything was tried). */
-    fun next(userRating: Double, played: Set<String>, exclude: String? = null): Puzzle? {
-        val pool = all.filter { it.id !in played && it.id != exclude }.ifEmpty { all.filter { it.id != exclude } }
-        return pool.minByOrNull { kotlin.math.abs(it.rating - userRating) }
+    /** Adaptive, randomised pick (see [PuzzleSelector]). */
+    fun next(history: PuzzleHistory, exclude: String? = null, random: Random = Random.Default): Puzzle? =
+        PuzzleSelector.pick(all, history, exclude, random)
+}
+
+/**
+ * Everything the selector needs to know about the player's puzzle past.
+ *
+ * @property solved ids solved at some point; they never come back.
+ * @property failed id → value of [attempts] when it was failed; it returns after [PuzzleSelector.RETRY_GAP] more attempts.
+ * @property attempts rated puzzle attempts so far (solves and fails).
+ */
+data class PuzzleHistory(
+    val elo: Int = PuzzleRating.START.toInt(),
+    val attempts: Int = 0,
+    val solvedCount: Int = 0,
+    val solved: Set<String> = emptySet(),
+    val failed: Map<String, Int> = emptyMap(),
+) {
+    /** Applies one rated result and returns the new history (Elo, solved set, spaced-repetition queue). */
+    fun record(p: Puzzle, solvedCleanly: Boolean): PuzzleHistory {
+        val newElo = PuzzleRating.update(elo.toDouble(), p.rating, solvedCleanly, attempts).roundToInt()
+        return copy(
+            elo = newElo,
+            attempts = attempts + 1,
+            solvedCount = solvedCount + if (solvedCleanly) 1 else 0,
+            solved = if (solvedCleanly) solved + p.id else solved,
+            failed = if (solvedCleanly) failed - p.id else failed + (p.id to attempts + 1),
+        )
+    }
+}
+
+/**
+ * Chess.com / Lichess-style puzzle choice: never in file order, never a solved puzzle, close to
+ * the player's rating, and missed puzzles come back only after a few others (spaced repetition).
+ */
+object PuzzleSelector {
+    const val WINDOW = 150
+    const val WIDE_WINDOW = 300
+    const val MIN_CANDIDATES = 10
+    /** A missed puzzle may return once this many other puzzles have been attempted. */
+    const val RETRY_GAP = 5
+    /** If nothing is within ±[WIDE_WINDOW], pick among this many closest-rated puzzles. */
+    const val NEAREST = 20
+
+    fun eligible(all: List<Puzzle>, h: PuzzleHistory, exclude: String?): List<Puzzle> = all.filter { p ->
+        p.id != exclude && p.id !in h.solved && h.failed[p.id].let { at -> at == null || h.attempts - at >= RETRY_GAP }
+    }
+
+    fun pick(all: List<Puzzle>, h: PuzzleHistory, exclude: String? = null, random: Random = Random.Default): Puzzle? {
+        var pool = eligible(all, h, exclude)
+        if (pool.isEmpty()) {
+            // Everything solved (or waiting to come back): fall back to missed ones, then to anything.
+            pool = all.filter { it.id != exclude && it.id !in h.solved }.ifEmpty { all.filter { it.id != exclude } }
+        }
+        if (pool.isEmpty()) return null
+        fun within(w: Int) = pool.filter { kotlin.math.abs(it.rating - h.elo) <= w }
+        val near = within(WINDOW)
+        val candidates = when {
+            near.size >= MIN_CANDIDATES -> near
+            else -> within(WIDE_WINDOW).ifEmpty { pool.sortedBy { kotlin.math.abs(it.rating - h.elo) }.take(NEAREST) }
+        }
+        return candidates.random(random)
     }
 }
 
@@ -112,11 +172,8 @@ object PuzzleRating {
 
     fun expected(user: Double, puzzle: Int): Double = 1.0 / (1.0 + 10.0.pow((puzzle - user) / 400.0))
 
-    fun k(played: Int) = when {
-        played < PROVISIONAL -> 64.0
-        played < 30 -> 40.0
-        else -> 24.0
-    }
+    /** K = 32 during the provisional period, 16 afterwards. */
+    fun k(played: Int) = if (played < PROVISIONAL) 32.0 else 16.0
 
     fun update(user: Double, puzzle: Int, solved: Boolean, played: Int): Double =
         (user + k(played) * ((if (solved) 1.0 else 0.0) - expected(user, puzzle))).coerceIn(400.0, 3400.0)

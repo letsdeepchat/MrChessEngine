@@ -39,6 +39,10 @@ import androidx.compose.material3.TextButton
 import androidx.compose.runtime.CompositionLocalProvider
 import com.mrchess.app.ui.BoardThemeSheet
 import com.mrchess.app.ui.CloudUi
+import com.mrchess.app.ui.OnlineScreen
+import com.mrchess.app.ui.PlayModeToggle
+import com.mrchess.app.ui.ProfileCard
+import com.mrchess.app.ui.ProfileDialog
 import com.mrchess.app.ui.HeaderAction
 import com.mrchess.app.ui.LocalBoardTheme
 import com.mrchess.app.ui.ImportScreen
@@ -81,15 +85,22 @@ class MainActivity : ComponentActivity() {
                 val authBusy by vm.authBusy.collectAsStateWithLifecycle()
                 val botDefaults by vm.botDefaults.collectAsStateWithLifecycle()
                 val pendingNewGame by vm.pendingNewGame.collectAsStateWithLifecycle()
+                val playOnline by vm.playOnline.collectAsStateWithLifecycle()
+                val username by vm.username.collectAsStateWithLifecycle()
+                val profileStats by vm.profileStats.collectAsStateWithLifecycle()
+                val photo by vm.cloudPhoto.collectAsStateWithLifecycle()
+                val showProfile by vm.showProfile.collectAsStateWithLifecycle()
+                val cloudUi = CloudUi(vm.cloudAvailable, account, vm::openAuth, vm::signOut, vm::syncNow, accountName)
+                val profileCard: @Composable () -> Unit = {
+                    ProfileCard(username, accountName, account, photo, profileStats, cloudUi, vm::setUsername)
+                }
                 // ⋮ menu: customisation and account (game actions are one tap away under the board).
                 val common = buildList {
                     add(HeaderAction("Board theme: ${theme.label}…") { vm.openThemeSheet() })
                     add(HeaderAction("Board sounds: ${soundPack.label}…") { vm.openSoundSheet() })
                     if (!naturalVoice) add(HeaderAction("Download natural voice") { vm.downloadNaturalVoice() })
-                    if (vm.cloudAvailable) add(
-                        if (account == null) HeaderAction("Sign in / Sign up to back up games…") { vm.openAuth() }
-                        else HeaderAction("Account: $account") { vm.go(Screen.REVIEW) },
-                    )
+                    add(HeaderAction("Profile / Account…") { vm.openProfile() })
+                    if (vm.cloudAvailable && account == null) add(HeaderAction("Sign in / Sign up to back up games…") { vm.openAuth() })
                 }
                 fun hooks(c: WorkspaceController) = WorkspaceHooks(
                     onReview = { fromMove1 -> vm.reviewFrom(c, fromMove1) },
@@ -100,6 +111,7 @@ class MainActivity : ComponentActivity() {
                     openNewGame = pendingNewGame && c === vm.play,
                     onNewGameOpened = vm::newGameOpened,
                     onShare = ::shareText,
+                    topSlot = if (c === vm.play) ({ PlayModeToggle(online = false, onChange = vm::setPlayOnline) }) else null,
                 )
                 if (showWelcome == null) return@CompositionLocalProvider // settings still loading: avoid a flash of the wrong screen
                 if (showWelcome == true || showAuth) {
@@ -130,7 +142,14 @@ class MainActivity : ComponentActivity() {
                 ) { pad ->
                     Box(Modifier.fillMaxSize().padding(pad)) {
                         when (screen) {
-                            Screen.PLAY -> Workspace(vm.play, common, hooks(vm.play))
+                            Screen.PLAY -> if (playOnline) {
+                                val os by vm.onlineController.state.collectAsStateWithLifecycle()
+                                OnlineScreen(
+                                    os, vm.onlineController, username,
+                                    onPlayBot = { vm.setPlayOnline(false) },
+                                    onSignIn = if (vm.cloudAvailable && account == null) vm::openAuth else null,
+                                )
+                            } else Workspace(vm.play, common, hooks(vm.play))
                             Screen.TWO_PLAYER -> Workspace(vm.twoPlayer, common, hooks(vm.twoPlayer))
                             Screen.IMPORT -> importWs?.let { c ->
                                 Workspace(c, common, hooks(c))
@@ -142,13 +161,14 @@ class MainActivity : ComponentActivity() {
                             Screen.REVIEW -> reviewWs?.let { c ->
                                 Workspace(c, common, hooks(c))
                             } ?: ReviewList(
-                                saved,
-                                CloudUi(vm.cloudAvailable, account, vm::openAuth, vm::signOut, vm::syncNow, accountName),
+                                saved, cloudUi,
                                 vm::reviewSaved, vm::deleteSaved, vm::clearHistory,
+                                header = profileCard,
                             )
                         }
                     }
                 }
+                if (showProfile) ProfileDialog(profileCard, vm::closeProfile)
                 if (themeSheet) BoardThemeSheet(theme, vm::setBoardTheme, vm::closeThemeSheet)
                 if (soundSheet) SoundPackSheet(soundPack, vm::setSoundPack, vm::closeSoundSheet)
                 message?.let { m ->

@@ -48,12 +48,14 @@ fun ReviewList(
     onOpen: (GameRecordEntity) -> Unit,
     onDelete: (GameRecordEntity) -> Unit,
     onClear: (alsoCloud: Boolean) -> Unit,
+    /** Profile card at the top (falls back to the plain backup card). */
+    header: (@Composable () -> Unit)? = null,
 ) {
     var confirmClear by remember { mutableStateOf(false) }
     LazyColumn(Modifier.fillMaxWidth().padding(horizontal = 12.dp)) {
         item {
             Spacer(Modifier.height(12.dp))
-            CloudCard(cloud)
+            if (header != null) header() else CloudCard(cloud)
             Row(Modifier.fillMaxWidth().padding(top = 12.dp), verticalAlignment = Alignment.CenterVertically) {
                 Text("Your games (${saved.size})", style = MaterialTheme.typography.titleMedium, modifier = Modifier.weight(1f))
                 if (saved.isNotEmpty()) TextButton(onClick = { confirmClear = true }) { Text("Clear history") }

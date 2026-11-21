@@ -1,6 +1,7 @@
 package com.mrchess.app.ui
 
 import android.content.Context
+import androidx.compose.runtime.Immutable
 import com.mrchess.app.audio.BoardSoundManager
 import com.mrchess.app.data.EngineProvider
 import com.mrchess.app.data.ReviewRepository
@@ -23,6 +24,9 @@ import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.conflate
+import kotlinx.coroutines.flow.distinctUntilChanged
+import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
@@ -39,6 +43,12 @@ enum class TwoPlayerView(val label: String, val short: String) {
     SOLO_FLIP("Solo Pass & Play (Board Flip)", "Board flip"),
 }
 
+/**
+ * Everything one board screen shows. Immutable: every change is a new instance, and the heavy
+ * parts (timeline, position) are shared between instances, so Compose can skip whatever did not
+ * change.
+ */
+@Immutable
 data class WorkspaceState(
     val mode: SessionMode,
     val timeline: GameTimeline = GameTimeline(),
@@ -129,6 +139,28 @@ class WorkspaceController(
     private var recordId: String? = null
     private var annotator: TimelineAnnotator? = null
     private val annotationDepth = if (mode == SessionMode.POST_GAME_REVIEW) 14 else 12
+
+    private val _evalBar = MutableStateFlow(0f)
+    /**
+     * White's winning chances (−1..1) for the eval bar, in its own flow and at most every 250 ms,
+     * so evaluation updates redraw only the bar, never the board or the top bar.
+     */
+    val evalBar: StateFlow<Float> = _evalBar
+
+    init {
+        scope.launch {
+            _state.map { st -> evalOf(st) }.distinctUntilChanged().conflate().collect { v ->
+                _evalBar.value = v
+                delay(EVAL_THROTTLE_MS)
+            }
+        }
+    }
+
+    private fun evalOf(st: WorkspaceState): Float {
+        val score = if (st.inspecting) st.timeline.nodes[st.insightIndex!!].annotation?.evalBeforeWhite
+            else st.currentHint?.scoreWhite ?: st.timeline.currentNode?.evalScore
+        return (score?.winningChances ?: 0.0).toFloat()
+    }
 
     // ------------------------------------------------------------------ lifecycle
 
@@ -362,6 +394,15 @@ class WorkspaceController(
 
     private suspend fun runWork() {
         val coach = EngineProvider.coach(context)
+        val ann = annotator ?: TimelineAnnotator(coach, SearchLimit.Depth(annotationDepth)).also { annotator = it }
+        // 0. Play: badge the move the player just made before the engine answers, so both sides'
+        //    moves get their badge and accuracy straight away (the position before it is usually
+        //    cached from the engine's previous move, so this costs one search).
+        val st0 = s
+        if (st0.engineToMove && st0.timeline.atEnd && !st0.gameOver) {
+            val last = st0.timeline.nodes.lastIndex
+            if (last >= 0 && st0.timeline.nodes[last].annotation == null) annotateOne(ann, last)
+        }
         // 1. Opponent move (Play mode, at the end of the line, engine's turn).
         val st = s
         if (st.engineToMove && st.timeline.atEnd && !st.gameOver) {
@@ -391,25 +432,20 @@ class WorkspaceController(
             hintRequested = false
             if (s.fen == fen) _state.update { it.copy(hint = e, hintFen = fen) }
         }
-        // 3. Move-quality badges: the move just played first, then the rest of the game in order.
-        val ann = annotator ?: TimelineAnnotator(coach, SearchLimit.Depth(annotationDepth)).also { annotator = it }
+        // 3. Move-quality badges for every ply, White's and Black's alike: the move on the board
+        //    and the two latest moves first (so a fast player never starves one side), then the
+        //    rest of the game in order.
         val t0 = s.timeline
         val order = buildList {
             t0.currentNode?.let { add(t0.currentPly - 1) }
+            if (t0.nodes.isNotEmpty()) add(t0.nodes.lastIndex)
+            if (t0.nodes.size > 1) add(t0.nodes.lastIndex - 1)
             addAll(t0.nodes.indices)
         }.distinct().filter { t0.nodes[it].annotation == null }
         if (order.isNotEmpty()) {
             _state.update { it.copy(annotating = true) }
             try {
-                for (i in order) {
-                    val node = s.timeline.nodes.getOrNull(i) ?: break
-                    if (node.annotation != null) continue
-                    val t = s.timeline
-                    val a = withContext(Dispatchers.Default) { ann.annotate(t, i) }
-                    _state.update { cur ->
-                        if (cur.timeline.nodes.getOrNull(i)?.uci == node.uci) cur.copy(timeline = cur.timeline.annotate(i, a)) else cur
-                    }
-                }
+                for (i in order) annotateOne(ann, i)
             } finally {
                 _state.update { it.copy(annotating = false) }
             }
@@ -423,7 +459,20 @@ class WorkspaceController(
         }
     }
 
+    /** Classifies move [i] (unless it already has a badge) and stores it if the line is unchanged. */
+    private suspend fun annotateOne(ann: TimelineAnnotator, i: Int) {
+        val node = s.timeline.nodes.getOrNull(i) ?: return
+        if (node.annotation != null) return
+        val t = s.timeline
+        val a = withContext(Dispatchers.Default) { ann.annotate(t, i) }
+        _state.update { cur ->
+            if (cur.timeline.nodes.getOrNull(i)?.uci == node.uci) cur.copy(timeline = cur.timeline.annotate(i, a)) else cur
+        }
+    }
+
     companion object {
+        private const val EVAL_THROTTLE_MS = 250L
+
         fun engineLabel(elo: Int) = if (elo >= 3200) "Stockfish (full)" else "Stockfish $elo"
 
         fun defaultTitle(mode: SessionMode, elo: Int) = when (mode) {

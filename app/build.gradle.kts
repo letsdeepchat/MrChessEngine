@@ -30,8 +30,8 @@ android {
         applicationId = "com.mrchess.app"
         minSdk = 26
         targetSdk = 35
-        versionCode = 8
-        versionName = "1.6.0"
+        versionCode = 9
+        versionName = "1.7.0"
         buildConfigField("boolean", "CLOUD_SYNC", cloudSyncEnabled.toString())
         buildConfigField("String", "WEB_CLIENT_ID", "\"$webClientId\"")
         // Stockfish is built for arm64 only (see scripts/build_stockfish_android.sh).
@@ -75,6 +75,11 @@ android {
 }
 
 kotlin { compilerOptions { jvmTarget.set(org.jetbrains.kotlin.gradle.dsl.JvmTarget.JVM_17) } }
+
+composeCompiler {
+    @Suppress("DEPRECATION")
+    stabilityConfigurationFile.set(rootProject.layout.projectDirectory.file("compose-stability.conf"))
+}
 
 dependencies {
     implementation(project(":chesscore"))

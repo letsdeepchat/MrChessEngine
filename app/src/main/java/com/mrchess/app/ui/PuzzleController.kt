@@ -1,9 +1,9 @@
 package com.mrchess.app.ui
 
 import com.mrchess.app.audio.BoardSoundManager
-import com.mrchess.app.data.PuzzleStats
 import com.mrchess.app.data.SettingsRepository
 import com.mrchess.core.puzzle.Puzzle
+import com.mrchess.core.puzzle.PuzzleHistory
 import com.mrchess.core.puzzle.PuzzleRating
 import com.mrchess.core.puzzle.PuzzleSession
 import com.mrchess.core.puzzle.PuzzleSet
@@ -17,14 +17,16 @@ import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
-import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 
+/** Rating line shown above the puzzle board. */
+data class PuzzleStats(val rating: Double, val played: Int, val solved: Int)
+
 data class PuzzleUiState(
     val session: PuzzleSession? = null,
-    val stats: PuzzleStats = PuzzleStats(),
+    val history: PuzzleHistory = PuzzleHistory(),
     val selected: Int? = null,
     val targets: Set<Int> = emptySet(),
     /** Square of the piece to move, after Hint. */
@@ -35,17 +37,22 @@ data class PuzzleUiState(
     val message: String? = null,
     val good: Boolean? = null,
     val loading: Boolean = true,
-)
+) {
+    val stats: PuzzleStats get() = PuzzleStats(history.elo.toDouble(), history.attempts, history.solvedCount)
+}
 
 /**
- * Grandmaster-level puzzles (Lichess puzzle database, CC0, rated 2500+). The next puzzle is the
- * unplayed one closest to the player's estimated Elo; the first attempt at each puzzle updates
- * the estimate (see [PuzzleRating]). Fully offline.
+ * Grandmaster-level puzzles (Lichess puzzle database, CC0, rated 2500+). Each new puzzle is a
+ * random unsolved one near the player's puzzle Elo ([com.mrchess.core.puzzle.PuzzleSelector]);
+ * missed puzzles come back after five others. The first attempt at each puzzle updates the Elo
+ * (K = 32 for the first 10, then 16). History is saved synchronously, so a force-close never
+ * replays the same puzzles. Fully offline; [onHistoryChanged] lets a signed-in account back it up.
  */
 class PuzzleController(
     private val scope: CoroutineScope,
     private val settings: SettingsRepository,
     private val sounds: BoardSoundManager,
+    private val onHistoryChanged: (PuzzleHistory) -> Unit = {},
 ) {
     private val _state = MutableStateFlow(PuzzleUiState())
     val state: StateFlow<PuzzleUiState> = _state
@@ -54,17 +61,27 @@ class PuzzleController(
 
     init {
         scope.launch {
-            val first = settings.puzzleStats.first()
-            _state.update { it.copy(stats = first) }
+            settings.migratePuzzles()
+            _state.update { it.copy(history = settings.puzzleHistory.value) }
             withContext(Dispatchers.Default) { PuzzleSet.all }
             next()
-            settings.puzzleStats.collect { st -> _state.update { it.copy(stats = st) } }
+            settings.puzzleHistory.collect { h -> _state.update { it.copy(history = h) } }
         }
     }
 
     fun next() {
-        val p = PuzzleSet.next(s.stats.rating, s.stats.seen, exclude = s.session?.puzzle?.id) ?: return
+        val p = PuzzleSet.next(settings.puzzleHistory.value, exclude = s.session?.puzzle?.id) ?: return
         start(p, rated = false)
+    }
+
+    /**
+     * The Puzzles tab was opened: a finished or untouched puzzle is replaced by a fresh pick; a
+     * puzzle the player is in the middle of stays.
+     */
+    fun onOpened() {
+        val ses = s.session ?: return
+        val inProgress = !ses.finished && ses.ply > 1
+        if (!inProgress) next()
     }
 
     private fun start(p: Puzzle, rated: Boolean) {
@@ -176,17 +193,18 @@ class PuzzleController(
         }
     }
 
-    fun resetRating() { scope.launch { settings.resetPuzzles() } }
+    fun resetRating() { settings.resetPuzzleHistory(); onHistoryChanged(settings.puzzleHistory.value) }
 
     private fun rate(solved: Boolean): Double? {
         val ses = s.session ?: return null
         if (s.rated) return null
-        val st = s.stats
+        val before = settings.puzzleHistory.value
         val clean = solved && !ses.failed
-        val new = PuzzleRating.update(st.rating, ses.puzzle.rating, clean, st.played)
-        val change = new - st.rating
-        _state.update { it.copy(rated = true, ratingChange = change) }
-        scope.launch { settings.recordPuzzle(ses.puzzle.id, new, clean) }
+        val after = before.record(ses.puzzle, clean)
+        settings.savePuzzleHistory(after) // commit(): on disk before the next frame
+        onHistoryChanged(after)
+        val change = (after.elo - before.elo).toDouble()
+        _state.update { it.copy(rated = true, ratingChange = change, history = after) }
         return change
     }
 

@@ -41,12 +41,15 @@ data class GameTimeline(
     val atEnd: Boolean get() = currentPly == nodes.size
 
     fun fenAt(ply: Int): String = if (ply == 0) startFen else nodes[ply - 1].fenAfterMove
+
+    /** Every position of the line: index 0 is the start (or `[FEN]` tag) position, index i the board after ply i. */
+    val fenTimeline: List<String> get() = List(nodes.size + 1) { fenAt(it) }
     fun positionAt(ply: Int): Position = if (ply == currentPly) position else Position.fromFen(fenAt(ply))
 
     // Derived values are computed once per timeline instance. The UI reads them many times per
     // frame, and the instance is shared by every UI state that has not changed the game itself.
     /** The current position (parsed once; its legal moves are cached on the instance). */
-    val position: Position by lazy(LazyThreadSafetyMode.PUBLICATION) { Position.fromFen(fenAt(currentPly)) }
+    val position: Position by lazy(LazyThreadSafetyMode.PUBLICATION) { PositionCache.get(fenAt(currentPly)) }
     private val startPosition: Position by lazy(LazyThreadSafetyMode.PUBLICATION) { Position.fromFen(startFen) }
     /** Result at the current ply (see [resultAtCurrent]). */
     val result: GameResult by lazy(LazyThreadSafetyMode.PUBLICATION) { computeResult() }
@@ -154,4 +157,18 @@ data class GameTimeline(
             return if (atEnd) t else t.toStart()
         }
     }
+}
+
+/**
+ * A few recently parsed positions, by FEN. Annotating a move or toggling a flag creates a new
+ * timeline instance for the same position; reusing the parsed [Position] keeps its identity, so
+ * the board (which keys its animation and drawing on the position) does not redraw or re-slide.
+ */
+internal object PositionCache {
+    private const val SIZE = 16
+    private val map = object : LinkedHashMap<String, Position>(SIZE, 0.75f, true) {
+        override fun removeEldestEntry(eldest: MutableMap.MutableEntry<String, Position>?) = size > SIZE
+    }
+
+    fun get(fen: String): Position = synchronized(map) { map[fen] } ?: Position.fromFen(fen).also { p -> synchronized(map) { map[fen] = p } }
 }
