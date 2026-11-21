@@ -15,7 +15,7 @@ recogniser all run on the device.
 
 | | |
 |---|---|
-| **Five tabs** | **Play** (you vs Stockfish), **2 Player**, **Import** (FEN / PGN / screenshot), **Review** (your saved games) and **Puzzles**. The four board tabs share one workspace. |
+| **Five tabs** | **Play** (**Play Bot** vs Stockfish, or **Play Online** against a live opponent), **2 Player**, **Import** (FEN / PGN / screenshot), **Review** (your saved games) and **Puzzles**. The four board tabs share one workspace. |
 | **Thumb-zone layout** | Fixed layout from top to bottom: header, move strip, free space, full-width board, coach/navigation bar, one-tap game bar (**New Game**, **Resign / Restart**, **Undo**, **Review**), mode bar, tabs. Pop-ups float over the free space, so the board never moves. The ⋮ menu only holds customisation: board theme, sound pack and voice. |
 | **Move navigation** | `|<` `<` `>` `>|` plus a move strip you can tap to jump to any move. If you go back and play a different move, the later moves are dropped and the game continues from your new move (Stockfish replies in Play). |
 | **Best move + why / Live coach** | A floating card you can close with × or by swiping. It shows the best move as a blue arrow, the eval, tactic/position tags, 2–3 reasons, the expected continuation and the 2nd-best move. Live coach keeps analysing while the card is hidden, and the "Show coach" pill brings it back. |
@@ -25,7 +25,9 @@ recogniser all run on the device.
 | **Game review** | Accuracy per side, the ten badge counts (tap one to jump to that move), **Game Rating** (opponent's rating + (accuracy − 75) × 32, rounded to 50, 400–3200), Opening / Middlegame / Endgame accuracy with an icon (moves 1–10, 11–25, 26+ or ≤ 6 pieces), Tactics (sharp positions, misses and blunders) and Strategy (quiet positions), plus Share, New Game and Start Review. Move accuracy uses 103.1668·e^(−0.04354·loss) − 3.1669, capped at 65 / 35 / 10 for inaccuracies, mistakes and misses, and blunders (0 past 35 % loss); game accuracy is the mean of the weighted and harmonic averages, with book moves at half weight. |
 | **2 Player** | New Game asks which colour Player 1 (bottom edge) plays: White, Black or Random. Three seating modes from the pill in the top bar. **Opposite Players (Piece Flip)** (default): the board grid stays fixed with Player 1's ranks at the bottom, and every piece icon turns 180° (animated) on Player 2's turn so the player opposite sees the pieces upright. **Tabletop Split**: Player 1's pieces upright, Player 2's upside down. **Solo Pass & Play (Board Flip)**: the whole board turns to the side to move. |
 | **Board themes** | Classic Green, Brown Wood, Ice Blue, Dark Purple and Tournament Slate. Pick one from ⋮ → Board theme. The choice applies to every tab and is saved with DataStore. |
-| **GM puzzles** | 451 puzzles rated 2500–2988 from the Lichess puzzle database (CC0), all checked to be solvable by the unit tests. The next puzzle is the unplayed one closest to your estimated Elo (starts at 1500, K = 64 for the first 10 puzzles, then 40, then 24). Only the first try at each puzzle counts; a hint or the solution counts as a miss. Fully offline. |
+| **GM puzzles** | 451 puzzles rated 2500–2988 from the Lichess puzzle database (CC0), all checked to be solvable by the unit tests. Each puzzle is picked **at random** from the unsolved ones rated within ±150 of your puzzle Elo (±300 if fewer than 10 qualify, else the 20 closest), so reopening the tab never replays the same sequence and solved puzzles never return. A missed puzzle comes back only after 5 other attempts. Elo starts at 1500, K = 32 for the first 10 puzzles, then 16. Only the first try counts; a hint or the solution counts as a miss. History (`solved_puzzle_ids`, `failed_puzzle_history`, `user_puzzle_elo`) is saved with `SharedPreferences.commit()` and backed up to `users/{uid}` when signed in. |
+| **Play Online** | Pick a time control (1 min Bullet, 3 min Blitz, 3\|2 Blitz, 10 min Rapid) and an opponent range (±100, ±200, ±400 or any) around your online rating (starts at 1000). Matchmaking pairs you only with someone whose range also accepts you, claims the ticket in a Firestore transaction and assigns colours at random. Live board with both clocks, resign, draw offers, abort before move 2, flag on time, Elo update (K = 32) and Game Review afterwards. Guests play through Firebase anonymous sign-in. |
+| **Profile** | Top of the Review tab and ⋮ → Profile / Account: Google photo or monogram, editable `@username` (saved on the phone and at `users/{uid}.username`), name, e-mail, puzzle rating, online rating, games played and average accuracy, plus Sync now and Sign out. |
 | **Review history** | Finished and reviewed games are stored in a local Room database with accuracy and badges, and stay until you delete them or clear the app's storage. |
 | **Welcome screen and cloud backup** | First launch shows Continue with Google, Continue with Email and Play as Guest. Guests get every feature; signing in only backs up review history to Firestore (`users/{uid}/games`). Sign in later from ⋮ or the Review tab. Google sign-in (`GoogleAuthHelper`) tries Credential Manager, then the Play services account picker, then Firebase's hosted Google page in a Custom Tab. All three need the APK's SHA-1 (and SHA-256 for the browser route) in Firebase; e-mail sign-in needs the Email/Password provider enabled. |
 | **Performance** | The board is one canvas: squares, pieces (glyph layouts measured once per size), highlights and arrows are drawn in a single pass, and piece turning and the 160 ms move slide only redraw it. Tap-tap or drag-to-move, with selection on touch-down. Engine, coach, move-quality and opening-book work runs on background threads; the game result, position and summary are cached per timeline instead of replaying the game on every frame. Stockfish's threads and 64 MB hash are set once (not on every switch between bot and coach), and both the engine and the opening book warm up at launch. Bots answer in 0.15–1 s depending on strength. |
@@ -107,13 +109,10 @@ blunder with its refutation.
 3. Open **Authentication** and press **Get started** (until you do, Firebase answers every sign-in
    with `CONFIGURATION_NOT_FOUND`). Then under **Sign-in method** enable **Email/Password** and
    **Google** (pick a support e-mail).
-4. Open **Firestore Database → Create database**, then publish these rules:
-   ```
-   rules_version = '2';
-   service cloud.firestore { match /databases/{db}/documents {
-     match /users/{uid}/games/{id} { allow read, write: if request.auth != null && request.auth.uid == uid; }
-   } }
-   ```
+4. Open **Firestore Database → Create database**, then publish the rules in
+   [`firestore.rules`](firestore.rules) (profile and game backup for the owner only, the
+   matchmaking queue, and live games readable and writable only by their two players).
+   For **Play Online** as a guest, also enable **Anonymous** under Authentication → Sign-in method.
 5. Download `google-services.json` again (after enabling Google sign-in) and commit it as `app/google-services.json`.
    The next build includes the `:cloudsync` module and the INTERNET permission, and the welcome
    screen, ⋮ menu and Review tab offer sign-in.

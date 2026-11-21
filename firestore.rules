@@ -1,0 +1,45 @@
+rules_version = '2';
+// Mr. Chess Trainer: Firestore security rules. Deploy with `firebase deploy --only firestore:rules`
+// or paste into Firebase console → Firestore Database → Rules.
+service cloud.firestore {
+  match /databases/{database}/documents {
+    function signedIn() { return request.auth != null; }
+    function isMe(uid) { return signedIn() && request.auth.uid == uid; }
+
+    // Profile (username, onlineElo, puzzle progress) and the game backup: owner only.
+    match /users/{uid} {
+      allow read, write: if isMe(uid);
+      match /games/{id} { allow read, write: if isMe(uid); }
+    }
+
+    // One ticket per waiting player, keyed by uid.
+    match /matchmaking_queue/{uid} {
+      allow read: if signedIn();
+      allow create, delete: if isMe(uid);
+      // The owner refreshes the heartbeat; another player may only claim a waiting ticket.
+      allow update: if isMe(uid)
+        || (signedIn()
+            && resource.data.status == 'waiting'
+            && request.resource.data.status == 'matched'
+            && request.resource.data.matchedBy == request.auth.uid
+            && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['status', 'gameId', 'matchedBy']));
+    }
+
+    // Live games: only the two players can read or change them, and never swap the players.
+    match /online_games/{gameId} {
+      allow read: if signedIn() && request.auth.uid in resource.data.players;
+      allow create: if signedIn()
+        && request.auth.uid in request.resource.data.players
+        && request.resource.data.players.size() == 2
+        && request.resource.data.status == 'active';
+      allow update: if signedIn()
+        && request.auth.uid in resource.data.players
+        && resource.data.status == 'active'
+        && request.resource.data.whiteUid == resource.data.whiteUid
+        && request.resource.data.blackUid == resource.data.blackUid
+        && request.resource.data.players == resource.data.players
+        && request.resource.data.moves.size() >= resource.data.moves.size()
+        && request.resource.data.moves.size() <= resource.data.moves.size() + 1;
+    }
+  }
+}

@@ -30,6 +30,8 @@ class FirebaseCloudSync(context: Context, private val webClientId: String) : Clo
     private val db by lazy { FirebaseFirestore.getInstance() }
     private val _account = MutableStateFlow(auth.currentUser?.email)
     private val _name = MutableStateFlow(auth.currentUser?.displayName)
+    private val _photo = MutableStateFlow(auth.currentUser?.photoUrl?.toString())
+    override val photoUrl: StateFlow<String?> = _photo
 
     override val available = true
     override val account: StateFlow<String?> = _account
@@ -39,6 +41,7 @@ class FirebaseCloudSync(context: Context, private val webClientId: String) : Clo
     override suspend fun signIn(activity: Any): Result<String> = runCatching {
         val user = GoogleAuthHelper(auth, webClientId).signIn(activity as ComponentActivity)
         _name.value = user.displayName
+        _photo.value = user.photoUrl?.toString()
         _account.value = user.email ?: user.uid
         _account.value!!
     }
@@ -90,6 +93,7 @@ class FirebaseCloudSync(context: Context, private val webClientId: String) : Clo
         runCatching { CredentialManager.create(appContext).clearCredentialState(ClearCredentialStateRequest()) }
         _account.value = null
         _name.value = null
+        _photo.value = null
     }
 
     private fun games() = db.collection("users").document(auth.currentUser?.uid ?: error("Not signed in")).collection("games")

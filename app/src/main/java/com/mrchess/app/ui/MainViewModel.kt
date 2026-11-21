@@ -15,11 +15,12 @@ import com.mrchess.core.rules.GameTimeline
 import com.mrchess.core.rules.Pgn
 import com.mrchess.core.rules.Position
 import com.mrchess.core.rules.Side
+import com.mrchess.core.online.OnlinePlay
+import com.mrchess.core.puzzle.PuzzleRating
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.combine
-import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.flow.update
@@ -60,12 +61,21 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
     val cloudName: StateFlow<String?> get() = history.cloud.profileName
     private val _showThemeSheet = MutableStateFlow(false)
     val showThemeSheet: StateFlow<Boolean> = _showThemeSheet
+    private val _playOnline = MutableStateFlow(false)
+    /** Play tab mode: false = Play Bot (Stockfish), true = Play Online. */
+    val playOnline: StateFlow<Boolean> = _playOnline
+    fun setPlayOnline(on: Boolean) {
+        _playOnline.value = on
+        activate()
+    }
+
     private val _showSoundSheet = MutableStateFlow(false)
     val showSoundSheet: StateFlow<Boolean> = _showSoundSheet
     private val _message = MutableStateFlow<String?>(null)
     val message: StateFlow<String?> = _message
 
-    val botDefaults: StateFlow<BotDefaults> = mrApp.settings.botDefaults.stateIn(viewModelScope, SharingStarted.Eagerly, BotDefaults())
+    /** Read synchronously from SharedPreferences, so the very first frame shows the saved bot. */
+    val botDefaults: StateFlow<BotDefaults> = mrApp.settings.botDefaults
     private val _pendingNewGame = MutableStateFlow(false)
     /** "+ New Game" was tapped in Import/Review: the Play tab should open its New Game dialog. */
     val pendingNewGame: StateFlow<Boolean> = _pendingNewGame
@@ -82,7 +92,71 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
     private fun controller(mode: SessionMode) =
         WorkspaceController(ctx, viewModelScope, mode, sounds, history)
 
-    val puzzles by lazy { PuzzleController(viewModelScope, mrApp.settings, sounds) }
+    val puzzles by lazy { PuzzleController(viewModelScope, mrApp.settings, sounds, onHistoryChanged = { pushProfileSoon() }) }
+
+    // ------------------------------------------------------------------ profile & online
+
+    val online: OnlinePlay = createOnlinePlay()
+    val cloudPhoto: StateFlow<String?> get() = history.cloud.photoUrl
+
+    /** The @username: the one the player chose, else a handle derived from the account name / e-mail. */
+    val username: StateFlow<String> = combine(mrApp.settings.username, history.cloud.profileName, history.cloud.account) { u, n, e ->
+        u ?: Profile.defaultHandle(n, e)
+    }.stateIn(viewModelScope, SharingStarted.Eagerly, mrApp.settings.username.value ?: Profile.defaultHandle(null, null))
+
+    val profileStats: StateFlow<ProfileStats> = combine(mrApp.settings.puzzleHistory, mrApp.settings.onlineElo, saved) { ph, elo, games ->
+        ProfileStats(puzzleRating = ph.elo, puzzleProvisional = ph.attempts < PuzzleRating.PROVISIONAL, onlineRating = elo,
+            gamesPlayed = games.size, averageAccuracy = Profile.averageAccuracy(games))
+    }.stateIn(viewModelScope, SharingStarted.Eagerly, ProfileStats())
+
+    private val _showProfile = MutableStateFlow(false)
+    /** The profile card opened from ⋮ → Profile / Account. */
+    val showProfile: StateFlow<Boolean> = _showProfile
+    fun openProfile() { _showProfile.value = true }
+    fun closeProfile() { _showProfile.value = false }
+
+    /** Saves a new @username; returns an error message, or null when it was saved. */
+    fun setUsername(raw: String): String? {
+        val name = Profile.sanitize(raw) ?: return "Use 3–20 letters, digits or underscores."
+        mrApp.settings.setUsername(name)
+        pushProfileSoon()
+        return null
+    }
+
+    val onlineController by lazy { OnlineController(ctx, viewModelScope, online, mrApp.settings, sounds, history, username, onReview = ::reviewOnline, onRatingChanged = ::pushProfileSoon) }
+
+    private var profileJob: kotlinx.coroutines.Job? = null
+    /** Backs up username, puzzle history and online rating to users/{uid} (signed-in accounts only). */
+    fun pushProfileSoon() {
+        if (!online.available || history.cloud.account.value == null || !Connectivity.isOnline(ctx)) return
+        profileJob?.cancel()
+        profileJob = viewModelScope.launch {
+            kotlinx.coroutines.delay(1_500)
+            online.saveProfile(Profile.toCloud(username.value, mrApp.settings.puzzleHistory.value, mrApp.settings.onlineElo.value, mrApp.settings.onlineGames))
+        }
+    }
+
+    /** After sign-in: merge the cloud profile into this phone's, then back up the result. */
+    private suspend fun pullProfile() {
+        if (!online.available || !Connectivity.isOnline(ctx)) return
+        val remote = online.loadProfile().getOrNull() ?: return
+        val st = mrApp.settings
+        (remote["username"] as? String)?.let { if (st.username.value == null) st.setUsername(it) }
+        st.savePuzzleHistory(Profile.mergePuzzles(st.puzzleHistory.value, remote))
+        val games = (remote["onlineGames"] as? Number)?.toInt() ?: 0
+        if (games > st.onlineGames) (remote["onlineElo"] as? Number)?.toInt()?.let { st.setOnlineElo(it, games) }
+        pushProfileSoon()
+    }
+
+    private fun createOnlinePlay(): OnlinePlay = runCatching {
+        if (!history.cloud.available) return OnlinePlay.Disabled
+        Class.forName("com.mrchess.cloudsync.FirebaseOnlinePlay").getConstructor(android.content.Context::class.java).newInstance(ctx) as OnlinePlay
+    }.getOrDefault(OnlinePlay.Disabled)
+
+    private fun reviewOnline(t: GameTimeline, title: String) {
+        if (t.nodes.isEmpty()) return
+        openReview(t.toStart(), title)
+    }
     val play = controller(SessionMode.PLAY_AI)
     val twoPlayer = controller(SessionMode.TWO_PLAYER).also { it.newTwoPlayerGame() }
     private val _importWs = MutableStateFlow<WorkspaceController?>(null)
@@ -91,11 +165,19 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
     val reviewWorkspace: StateFlow<WorkspaceController?> = _reviewWs
 
     init {
-        play.newGame(Side.WHITE, 1500)
+        // Cold start: the saved default bot (SharedPreferences, read synchronously) is set up
+        // before the first frame, so the header, the engine strength and the New Game slider all
+        // start at the saved Elo instead of flashing 1500.
+        val d = mrApp.settings.readBotDefaults()
+        play.newGame(if (d.saved) d.color.resolve() else Side.WHITE, d.elo)
         activate()
         viewModelScope.launch {
-            val d = mrApp.settings.botDefaults.first()
-            if (d.saved && play.state.value.timeline.nodes.isEmpty()) play.newGame(d.color.resolve(), d.elo)
+            // Defaults saved by 1.6 or earlier live in DataStore: copy them over once.
+            val migrated = mrApp.settings.migrateBotDefaults()
+            if (migrated != null && play.state.value.timeline.nodes.isEmpty()) play.newGame(migrated.color.resolve(), migrated.elo)
+        }
+        viewModelScope.launch {
+            history.cloud.account.collect { acc -> if (acc != null) pullProfile() }
         }
         viewModelScope.launch {
             history.migrateLegacyPgnFiles()
@@ -105,15 +187,17 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
     }
 
     fun go(s: Screen) {
+        val was = _screen.value
         _screen.value = s
         narrator.stop()
         activate()
+        if (s == Screen.PUZZLES && was != Screen.PUZZLES) puzzles.onOpened()
     }
 
     /** Only the visible session may use the engine. */
     private fun activate() {
         val s = _screen.value
-        play.setActive(s == Screen.PLAY)
+        play.setActive(s == Screen.PLAY && !playOnline.value)
         twoPlayer.setActive(s == Screen.TWO_PLAYER)
         _importWs.value?.setActive(s == Screen.IMPORT)
         _reviewWs.value?.setActive(s == Screen.REVIEW)
@@ -188,7 +272,7 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
     // ------------------------------------------------------------------ new game plumbing
 
     fun botGameStarted(elo: Int, color: SideChoice, save: Boolean) {
-        if (save) viewModelScope.launch { mrApp.settings.setBotDefaults(elo, color) }
+        if (save) mrApp.settings.setBotDefaults(elo, color) // commit(): survives an immediate force-close
     }
 
     fun newGameFromElsewhere() {
@@ -198,7 +282,10 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
 
     fun newGameOpened() { _pendingNewGame.value = false }
 
-    fun signOut() { viewModelScope.launch { history.cloud.signOut() } }
+    fun signOut() {
+        _showProfile.value = false
+        viewModelScope.launch { history.cloud.signOut() }
+    }
 
     fun syncNow() {
         viewModelScope.launch {

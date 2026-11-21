@@ -29,6 +29,8 @@ interface CloudSync {
     val account: StateFlow<String?>
     /** Signed-in Google profile name, or null. */
     val profileName: StateFlow<String?>
+    /** Google profile photo URL, or null. */
+    val photoUrl: StateFlow<String?> get() = NO_PHOTO
 
     /** [activity] is an android.app.Activity (kept as Any so this interface stays platform-free). */
     suspend fun signIn(activity: Any): Result<String>
@@ -40,6 +42,8 @@ interface CloudSync {
     suspend fun pull(): List<CloudGameRecord>
     suspend fun delete(id: String)
     suspend fun deleteAll()
+
+    companion object { private val NO_PHOTO: StateFlow<String?> = MutableStateFlow(null) }
 
     object Disabled : CloudSync {
         override val available = false

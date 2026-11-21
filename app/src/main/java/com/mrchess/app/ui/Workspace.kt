@@ -72,7 +72,11 @@ import androidx.compose.material3.Surface
 import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
+import androidx.compose.animation.core.animateFloatAsState
+import androidx.compose.animation.core.tween
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.Immutable
+import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableFloatStateOf
@@ -121,14 +125,19 @@ private val ModeH = 44.dp
 private val GameBarH = 52.dp
 
 /** ⋮ menu entries (customisation only: themes, sounds, voice). */
+@Immutable
 data class HeaderAction(val label: String, val onClick: () -> Unit)
 
 /** A one-tap icon + label button in the bar under the board. */
+@Immutable
 data class BarAction(val icon: ImageVector, val label: String, val enabled: Boolean = true, val onClick: () -> Unit)
 
 /** Colour choice in the New Game dialogs. [id] is persisted. */
 enum class SideChoice(val id: String, val label: String) {
     WHITE("white", "Play White"), BLACK("black", "Play Black"), RANDOM("random", "Random");
+
+    /** Value stored as `default_bot_color`: "WHITE", "BLACK" or "RANDOM". */
+    val prefValue: String get() = name
 
     fun resolve(): Side = when (this) {
         WHITE -> Side.WHITE
@@ -136,10 +145,14 @@ enum class SideChoice(val id: String, val label: String) {
         RANDOM -> if (kotlin.random.Random.nextBoolean()) Side.WHITE else Side.BLACK
     }
 
-    companion object { fun byId(id: String?) = entries.firstOrNull { it.id == id } ?: WHITE }
+    companion object {
+        fun byId(id: String?) = entries.firstOrNull { it.id == id } ?: WHITE
+        fun byPrefValue(v: String?) = entries.firstOrNull { it.name == v } ?: byId(v)
+    }
 }
 
 /** The Stockfish New Game defaults the player saved ([saved] = false: nothing saved yet). */
+@Immutable
 data class BotDefaults(val elo: Int = 1500, val color: SideChoice = SideChoice.WHITE, val saved: Boolean = false)
 
 /** Everything a board screen needs from outside its own session. */
@@ -156,6 +169,8 @@ data class WorkspaceHooks(
     val openNewGame: Boolean = false,
     val onNewGameOpened: () -> Unit = {},
     val onShare: (String) -> Unit = {},
+    /** Optional control floated at the top of the space above the board (Play: Bot | Online). */
+    val topSlot: (@Composable () -> Unit)? = null,
 )
 
 /**
@@ -221,18 +236,10 @@ fun UnifiedChessWorkspace(
             MoveStrip(st, c)
             Box(Modifier.weight(1f).fillMaxWidth()) {
                 val hint = st.currentHint
-                EvalBar(
-                    (if (st.inspecting) st.timeline.nodes[st.insightIndex!!].annotation?.evalBeforeWhite else hint?.scoreWhite
-                        ?: st.timeline.currentNode?.evalScore)?.winningChances ?: 0.0,
-                    st.flipped, Modifier.align(Alignment.BottomCenter).fillMaxWidth().height(6.dp),
-                )
-                Row(Modifier.align(Alignment.BottomStart).padding(start = 8.dp, bottom = 10.dp), verticalAlignment = Alignment.CenterVertically) {
-                    when {
-                        st.engineThinking -> { Spinner(); Text(" Engine thinking…", style = MaterialTheme.typography.labelMedium) }
-                        st.hintLoading -> { Spinner(); Text(" Coach is analysing…", style = MaterialTheme.typography.labelMedium) }
-                        st.status != null && !st.tabletop -> Text(st.status, style = MaterialTheme.typography.labelLarge, fontWeight = FontWeight.Bold)
-                    }
-                }
+                hooks.topSlot?.let { slot -> Box(Modifier.align(Alignment.TopCenter).padding(top = 4.dp)) { slot() } }
+                ThrottledEvalBar(c, st.flipped, Modifier.align(Alignment.BottomCenter).fillMaxWidth().height(6.dp))
+                StatusBadge(st, Modifier.align(Alignment.BottomStart).padding(start = 8.dp, bottom = 10.dp))
+                LiveAccuracy(st, Modifier.align(Alignment.TopEnd).padding(end = 8.dp, top = 6.dp))
                 if (st.tabletop) TabletopTurn(st, Modifier.align(Alignment.BottomCenter).padding(bottom = 10.dp))
                 val hasCard = hint != null || st.inspecting
                 if (!st.cardOpen && hasCard) {
@@ -331,6 +338,58 @@ private fun TabletopTurn(st: WorkspaceState, modifier: Modifier) {
 @Composable
 private fun Spinner() = CircularProgressIndicator(Modifier.size(14.dp), strokeWidth = 2.dp)
 
+/**
+ * "Thinking…" / "Analysing…" / game status, in a fixed-height box that is always composed: the
+ * spinner slot keeps its size and only fades, so nothing around it moves or re-measures.
+ */
+@Composable
+private fun StatusBadge(st: WorkspaceState, modifier: Modifier) {
+    val busy = st.engineThinking || st.hintLoading
+    val text = when {
+        st.engineThinking -> "Thinking…"
+        st.hintLoading -> "Coach is analysing…"
+        st.status != null && !st.tabletop -> st.status
+        else -> ""
+    }
+    Row(modifier.height(20.dp), verticalAlignment = Alignment.CenterVertically) {
+        Box(Modifier.size(14.dp).alpha(if (busy) 1f else 0f)) { if (busy) Spinner() }
+        Spacer(Modifier.width(4.dp))
+        Text(text, style = MaterialTheme.typography.labelMedium, fontWeight = if (busy) FontWeight.Normal else FontWeight.Bold, maxLines = 1, overflow = TextOverflow.Ellipsis)
+    }
+}
+
+/** The eval bar reads its own throttled flow, so engine updates recompose only this bar. */
+@Composable
+private fun ThrottledEvalBar(c: WorkspaceController, flipped: Boolean, modifier: Modifier) {
+    val target by c.evalBar.collectAsState()
+    val shown by animateFloatAsState(target, tween(250), label = "eval")
+    EvalBar(shown.toDouble(), flipped, modifier)
+}
+
+/** Live accuracy of both sides, from the moves classified so far. */
+@Composable
+private fun LiveAccuracy(st: WorkspaceState, modifier: Modifier) {
+    val sum = st.summary
+    val w = sum.accuracy(Side.WHITE)
+    val b = sum.accuracy(Side.BLACK)
+    if (w == null && b == null) return
+    Column(modifier, verticalArrangement = Arrangement.spacedBy(3.dp)) {
+        for ((side, acc) in listOf(Side.WHITE to w, Side.BLACK to b)) {
+            Surface(
+                color = if (side == Side.WHITE) Color(0xFFF2F2F2) else Color(0xFF2B2B2B),
+                contentColor = if (side == Side.WHITE) Color(0xFF202020) else Color.White,
+                shape = RoundedCornerShape(6.dp),
+            ) {
+                Text(
+                    (if (side == Side.WHITE) "W " else "B ") + (acc?.let { "%.1f%%".format(it) } ?: "–"),
+                    style = MaterialTheme.typography.labelSmall, fontWeight = FontWeight.Bold,
+                    modifier = Modifier.width(62.dp).padding(horizontal = 6.dp, vertical = 2.dp), maxLines = 1,
+                )
+            }
+        }
+    }
+}
+
 // ---------------------------------------------------------------------------- header & strip
 
 @Composable
@@ -366,12 +425,7 @@ private fun Header(st: WorkspaceState, c: WorkspaceController, menu: List<Header
         } else {
             IconButton(onClick = c::rotateButton) { Icon(Icons.Filled.ScreenRotation, "Rotate board") }
         }
-        val sum = st.summary
-        FilledTonalButton(onClick = c::openSummary, contentPadding = PaddingValues(horizontal = 12.dp), modifier = Modifier.height(32.dp)) {
-            if (st.annotating) { CircularProgressIndicator(Modifier.size(12.dp), strokeWidth = 1.5.dp); Spacer(Modifier.width(6.dp)) }
-            val errors = Side.entries.sumOf { s -> listOf(MoveQuality.MISTAKE, MoveQuality.BLUNDER).sumOf { sum.count(s, it) } }
-            Text(if (errors > 0) "Summary · $errors" else "Summary", style = MaterialTheme.typography.labelMedium)
-        }
+        SummaryButton(st.annotating, st.summary, c::openSummary)
         if (menu.isNotEmpty()) {
             Box {
                 IconButton(onClick = { menuOpen = true }) { Icon(Icons.Filled.MoreVert, "More") }
@@ -380,6 +434,25 @@ private fun Header(st: WorkspaceState, c: WorkspaceController, menu: List<Header
                 }
             }
         } else Spacer(Modifier.width(8.dp))
+    }
+}
+
+/**
+ * Always mounted, fixed size: the spinner slot is reserved and only fades in while moves are
+ * being classified, so the header never re-measures or shifts while the engine works.
+ */
+@Composable
+private fun SummaryButton(annotating: Boolean, sum: com.mrchess.core.review.GameSummary, onClick: () -> Unit) {
+    val errors = Side.entries.sumOf { s -> listOf(MoveQuality.MISTAKE, MoveQuality.BLUNDER).sumOf { sum.count(s, it) } }
+    FilledTonalButton(
+        onClick = onClick, contentPadding = PaddingValues(horizontal = 8.dp),
+        modifier = Modifier.height(32.dp).width(118.dp),
+    ) {
+        Box(Modifier.size(12.dp).alpha(if (annotating) 1f else 0f)) {
+            if (annotating) CircularProgressIndicator(Modifier.size(12.dp), strokeWidth = 1.5.dp)
+        }
+        Spacer(Modifier.width(6.dp))
+        Text(if (errors > 0) "Summary · $errors" else "Summary", style = MaterialTheme.typography.labelMedium, maxLines = 1, overflow = TextOverflow.Clip)
     }
 }
 
@@ -398,20 +471,37 @@ private fun MoveStrip(st: WorkspaceState, c: WorkspaceController) {
         verticalAlignment = Alignment.CenterVertically,
     ) {
         if (t.nodes.isEmpty()) item { Text("No moves yet", style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.onSurfaceVariant) }
-        itemsIndexed(t.nodes) { i, node ->
-            val active = i == t.currentPly - 1
-            Surface(
-                onClick = { c.goTo(i + 1) },
-                shape = RoundedCornerShape(8.dp),
-                color = if (active) MaterialTheme.colorScheme.primaryContainer else MaterialTheme.colorScheme.surfaceVariant,
-                modifier = Modifier.height(30.dp),
-            ) {
-                Row(Modifier.padding(horizontal = 8.dp), verticalAlignment = Alignment.CenterVertically) {
-                    Text(t.moveLabel(i), style = MaterialTheme.typography.labelLarge, fontWeight = if (active) FontWeight.Bold else FontWeight.Normal)
-                    node.moveQualityBadge?.takeIf { it != MoveQuality.GOOD && it != MoveQuality.FORCED }?.let { q ->
-                        Text(" ${q.symbol}", color = Color(q.color), fontWeight = FontWeight.Bold, style = MaterialTheme.typography.labelLarge)
-                    }
-                }
+        itemsIndexed(t.nodes, key = { i, n -> "$i:${n.uci}" }) { i, node ->
+            MovePill(t.moveLabel(i), node.annotation, active = i == t.currentPly - 1) { c.goTo(i + 1) }
+        }
+    }
+}
+
+/**
+ * One move in the strip, White's or Black's: "2. Nf3 ★ 97". Every class has its badge (Book,
+ * Good and Forced included); the badge slot is reserved while the move is still being
+ * classified, so pills don't change width when the badge arrives.
+ */
+@Composable
+private fun MovePill(label: String, a: com.mrchess.core.review.MoveAnnotation?, active: Boolean, onClick: () -> Unit) {
+    Surface(
+        onClick = onClick,
+        shape = RoundedCornerShape(8.dp),
+        color = if (active) MaterialTheme.colorScheme.primaryContainer else MaterialTheme.colorScheme.surfaceVariant,
+        modifier = Modifier.height(30.dp),
+    ) {
+        Row(Modifier.padding(start = 8.dp, end = 6.dp), verticalAlignment = Alignment.CenterVertically) {
+            Text(label, style = MaterialTheme.typography.labelLarge, fontWeight = if (active) FontWeight.Bold else FontWeight.Normal)
+            Spacer(Modifier.width(4.dp))
+            Box(Modifier.size(18.dp), contentAlignment = Alignment.Center) {
+                if (a != null) QualityDot(a.quality, 18.dp)
+                else Box(Modifier.size(6.dp).background(MaterialTheme.colorScheme.outlineVariant, RoundedCornerShape(50)))
+            }
+            if (a != null && a.quality != MoveQuality.BOOK && a.quality != MoveQuality.FORCED) {
+                Text(
+                    " ${a.accuracy.roundToInt()}", style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
             }
         }
     }
